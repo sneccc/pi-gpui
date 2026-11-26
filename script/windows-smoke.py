@@ -562,8 +562,10 @@ def main():
         check("closing a session stops its pi completely",
               wait_for(lambda: not any(alive(pid) for pid in second), 15),
               [pid for pid in second if alive(pid)])
-        check("the other session's pi keeps running", all(alive(pid) for pid in startup),
-              [pid for pid in startup if not alive(pid)])
+        # Only pi itself: `startup` may also hold short-lived helpers (the update check's curl.exe).
+        startup_pi = [pid for pid, exe in startup.items() if exe.lower() == "node.exe"]
+        check("the other session's pi keeps running", startup_pi and all(alive(pid) for pid in startup_pi),
+              [pid for pid in startup_pi if not alive(pid)])
 
         # --- quitting with a session open stops its pi too
         driver.send("key ctrl-q")

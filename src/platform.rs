@@ -251,10 +251,10 @@ pub fn reveal_in_file_manager(path: &std::path::Path) {
     #[cfg(windows)]
     let result = {
         use std::os::windows::process::CommandExt as _;
-        Command::new("explorer.exe")
-            .raw_arg(format!("/select,\"{}\"", path.display()))
-            .spawn()
-            .map(drop)
+        crate::process::spawn_outliving(
+            Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", path.display())),
+        )
+        .map(drop)
     };
     #[cfg(not(windows))]
     let result = if cfg!(target_os = "macos") {
@@ -297,8 +297,10 @@ pub fn open_in_editor(path: &std::path::Path) {
     // Zed when its CLI is installed, otherwise whatever Windows opens it with.
     #[cfg(windows)]
     let result = match crate::pi::find_executable("zed") {
-        Some(zed) => crate::process::command(zed).arg(path).spawn().map(drop),
-        None => Command::new("explorer.exe").arg(path).spawn().map(drop),
+        Some(zed) => {
+            crate::process::spawn_outliving(crate::process::command(zed).arg(path)).map(drop)
+        }
+        None => crate::process::spawn_outliving(Command::new("explorer.exe").arg(path)).map(drop),
     };
     #[cfg(not(windows))]
     let result = if cfg!(target_os = "macos") {

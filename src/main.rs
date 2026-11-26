@@ -55,6 +55,8 @@ fn main() {
         println!("pi-gpui {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    // Windows: pi and the other children die with the app, even a crashed one.
+    process::contain_children();
     // Release tooling: the pi versions this build supports, as JSON.
     if std::env::args().nth(1).as_deref() == Some("--pi-compat") {
         println!("{}", pi::compatibility_json());

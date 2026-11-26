@@ -115,6 +115,12 @@ E2E_MUTATIONS = [
         "    Ok(canonical)",
     ),
     (
+        "children are not tied to the app (no job object)",
+        "src/main.rs",
+        "    process::contain_children();\n",
+        "",
+    ),
+    (
         "caption buttons do nothing when clicked",
         "src/hub.rs",
         "            .on_click(move |_, window, _| act(window))\n",

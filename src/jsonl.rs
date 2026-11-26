@@ -109,7 +109,7 @@ impl Drop for JsonlProcess {
                 }
             }
             if let Ok(mut child) = child.lock()
-                && let Err(error) = child.kill()
+                && let Err(error) = crate::process::kill_tree(&mut child)
             {
                 eprintln!("pi-gpui: failed to stop a child process: {error}");
             }

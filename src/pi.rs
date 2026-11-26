@@ -372,7 +372,7 @@ fn run_with_timeout(command: &mut Command, timeout: Duration) -> Result<String, 
                 };
             }
             Ok(None) if started.elapsed() > timeout => {
-                if let Err(error) = child.kill() {
+                if let Err(error) = crate::process::kill_tree(&mut child) {
                     return Err(format!("timed out and could not be stopped: {error}"));
                 }
                 return Err(format!("no answer within {} s", timeout.as_secs()));

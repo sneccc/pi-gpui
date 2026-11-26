@@ -8,6 +8,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - the project is saved without Windows' `\\\\?\\` prefix
   - closing a session, and quitting the app, leave no pi process behind
   - the caption buttons (minimize, maximize, close) and a caption double click work
+  - killing the app without warning (a crash) stops pi too
 
     python -I script/windows-smoke.py [path\\to\\pi-gpui.exe]
 
@@ -224,6 +225,35 @@ def window_controls_check(sandbox):
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
 
 
+def crash_check(sandbox):
+    """A third launch: the app is killed without warning (as a crash would),
+    and pi must not be left running."""
+    home, auto = os.path.join(sandbox, "home3"), os.path.join(sandbox, "auto3")
+    project = os.path.join(sandbox, "crash project")
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env.pop("PI_EXECUTABLE", None)
+    app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pis = {}
+    try:
+        pis = wait_for(lambda: any(e.lower() == "node.exe" for e in descendants(app.pid).values())
+                       and descendants(app.pid), 25) or {}
+        check("crash: the app has a session running pi", bool(pis), pis)
+        # Only the app: no /T, so nothing but the job object can stop pi.
+        subprocess.run(["taskkill", "/F", "/PID", str(app.pid)], capture_output=True)
+        check("crash: the app is gone", bool(wait_for(lambda: app.poll() is not None, 10)))
+        check("crash: killing the app also stops pi (no orphans)",
+              wait_for(lambda: not any(alive(pid) for pid in pis), 15),
+              [pid for pid in pis if alive(pid)])
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+        for pid in pis:
+            if alive(pid):
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+
+
 # ---------------------------------------------------------------------- PNG
 def decode_png(path):
     """(width, height, rows of RGB(A) bytes) of an 8-bit, non-interlaced PNG."""
@@ -427,6 +457,7 @@ def main():
               wait_for(lambda: not any(alive(pid) for pid in every_pi), 15),
               [pid for pid in every_pi if alive(pid)])
         window_controls_check(sandbox)
+        crash_check(sandbox)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)

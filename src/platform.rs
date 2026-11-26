@@ -396,7 +396,58 @@ pub fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
     paths
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Files copied in Explorer (`CF_HDROP` on the clipboard).
+#[cfg(windows)]
+pub fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn OpenClipboard(owner: isize) -> i32;
+        fn CloseClipboard() -> i32;
+        fn IsClipboardFormatAvailable(format: u32) -> i32;
+        fn GetClipboardData(format: u32) -> isize;
+    }
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn DragQueryFileW(drop: isize, index: u32, buffer: *mut u16, size: u32) -> u32;
+    }
+    const CF_HDROP: u32 = 15;
+
+    let mut paths = Vec::new();
+    // SAFETY: the clipboard is opened and closed around the reads; the HDROP
+    // belongs to the clipboard and is only read while it is open, and every
+    // buffer is one longer than the length DragQueryFileW reported.
+    unsafe {
+        if IsClipboardFormatAvailable(CF_HDROP) == 0 {
+            return paths;
+        }
+        // Another program may hold the clipboard for a moment.
+        let opened = (0..10).any(|_| {
+            OpenClipboard(0) != 0 || {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                false
+            }
+        });
+        if !opened {
+            return paths;
+        }
+        let drop = GetClipboardData(CF_HDROP);
+        if drop != 0 {
+            let count = DragQueryFileW(drop, u32::MAX, std::ptr::null_mut(), 0);
+            for index in 0..count {
+                let length = DragQueryFileW(drop, index, std::ptr::null_mut(), 0) as usize;
+                let mut buffer = vec![0u16; length + 1];
+                DragQueryFileW(drop, index, buffer.as_mut_ptr(), buffer.len() as u32);
+                paths.push(std::ffi::OsString::from_wide(&buffer[..length]).into());
+            }
+        }
+        CloseClipboard();
+    }
+    paths
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
     Vec::new()
 }
@@ -504,5 +555,48 @@ mod tests {
         move_to_trash(&other.canonicalize().unwrap()).expect("recycled");
         assert!(!other.exists());
         assert!(move_to_trash(&file).is_err(), "a missing file is an error");
+    }
+
+    /// Puts `paths` on the clipboard the way Explorer's Copy does.
+    fn copy_files(paths: &[&std::path::Path]) {
+        let list = paths
+            .iter()
+            .map(|path| format!("'{}'", path.display().to_string().replace("'", "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let status = crate::process::command("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("Set-Clipboard -Path {list}"),
+            ])
+            .status()
+            .expect("powershell");
+        assert!(status.success(), "Set-Clipboard failed");
+    }
+
+    // Overwrites the clipboard, so it only runs on request:
+    // cargo test -- --ignored clipboard
+    #[test]
+    #[ignore = "overwrites the clipboard"]
+    fn clipboard_files_copied_in_explorer_are_read_back() {
+        let directory = std::env::temp_dir().join(format!("pi gpui clip {}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("a picture.png");
+        let second = directory.join("notes \u{e9}.txt");
+        std::fs::write(&first, b"png").unwrap();
+        std::fs::write(&second, b"hi").unwrap();
+
+        copy_files(&[&first, &second]);
+        assert_eq!(clipboard_file_paths(), vec![first.clone(), second.clone()]);
+
+        // Plain text on the clipboard is not a file list.
+        let status = crate::process::command("powershell")
+            .args(["-NoProfile", "-Command", "Set-Clipboard -Value 'just text'"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(clipboard_file_paths().is_empty());
+        std::fs::remove_dir_all(&directory).ok();
     }
 }

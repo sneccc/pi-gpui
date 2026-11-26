@@ -121,6 +121,12 @@ E2E_MUTATIONS = [
         "",
     ),
     (
+        "pasting copied files does nothing (clipboard list ignored)",
+        "src/platform.rs",
+        "        if IsClipboardFormatAvailable(CF_HDROP) == 0 {",
+        "        if IsClipboardFormatAvailable(CF_HDROP) != 0 {",
+    ),
+    (
         "caption buttons do nothing when clicked",
         "src/hub.rs",
         "            .on_click(move |_, window, _| act(window))\n",

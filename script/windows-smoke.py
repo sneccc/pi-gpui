@@ -9,6 +9,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - closing a session, and quitting the app, leave no pi process behind
   - the caption buttons (minimize, maximize, close) and a caption double click work
   - killing the app without warning (a crash) stops pi too
+  - pasting a file copied in Explorer does something (this overwrites the clipboard)
 
     python -I script/windows-smoke.py [path\\to\\pi-gpui.exe]
 
@@ -436,6 +437,20 @@ def main():
         second = wait_for(second_pi, 20) or {}
         every_pi.update(second)
         check("ctrl-n starts a second pi (new node.exe)", bool(second), descendants(app.pid))
+        # --- a file copied in Explorer pastes as an attachment (overwrites the clipboard)
+        attachment = os.path.join(sandbox, "attach me.txt")
+        with open(attachment, "w") as file:
+            file.write("hello")
+        copied = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"Set-Clipboard -Path '{attachment}'"],
+            capture_output=True).returncode == 0
+        check("the test could put a file on the clipboard", copied)
+        before_paste = picture("paste-before")
+        driver.send("key ctrl-v", "wait 500")
+        after_paste = picture("paste-after")
+        check("pasting a copied file changes the message field",
+              before_paste and after_paste and before_paste != after_paste)
+
         everyone = {app.pid, *descendants(app.pid)}
         consoles = [w for w in visible_windows(everyone) if w[0] not in ("Zed::Window",)]
         check("no console or stray window appears", not consoles, consoles)

@@ -57,6 +57,8 @@ fn main() {
     }
     // Windows: pi and the other children die with the app, even a crashed one.
     process::contain_children();
+    // Windows tests and debugging: PI_GPUI_HEADLESS=1 keeps the window hidden.
+    platform::enter_headless_desktop();
     // Release tooling: the pi versions this build supports, as JSON.
     if std::env::args().nth(1).as_deref() == Some("--pi-compat") {
         println!("{}", pi::compatibility_json());

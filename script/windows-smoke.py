@@ -12,7 +12,10 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [path\\to\\pi-gpui.exe]
+
+The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
+desktop, nothing pops up); --show puts them on your screen to watch.
 
 Needs pi on PATH. Sends no prompt, so it costs no tokens. Exit code 0 = all
 checks passed. See docs/WINDOWS_UI_CHECKS.md.
@@ -30,10 +33,23 @@ import time
 import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "target", "release", "pi-gpui.exe")
+ARGS = [arg for arg in sys.argv[1:] if arg != "--show"]
+HEADLESS = "--show" not in sys.argv[1:]
+EXE = ARGS[0] if ARGS else os.path.join(ROOT, "target", "release", "pi-gpui.exe")
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def join_headless_desktop():
+    """Moves this thread to the app's hidden desktop (src/platform.rs), so the
+    window checks below (EnumWindows, messages, focus) see the app's windows."""
+    user32.CreateDesktopW.restype = wt.HANDLE
+    user32.CreateDesktopW.argtypes = [wt.LPCWSTR, wt.LPCWSTR, ctypes.c_void_p, wt.DWORD, wt.DWORD, ctypes.c_void_p]
+    desktop = user32.CreateDesktopW("pi-gpui-headless", None, None, 0, 0x10000000, None)  # GENERIC_ALL
+    if not desktop or not user32.SetThreadDesktop(desktop):
+        sys.exit(f"could not join the hidden desktop (error {ctypes.get_last_error()}); try --show")
+    os.environ["PI_GPUI_HEADLESS"] = "1"
 
 failures = []
 
@@ -79,13 +95,34 @@ def process_table():
     return table
 
 
+kernel32.OpenProcess.restype = wt.HANDLE
+
+
+def start_time(pid):
+    """When the process started (100 ns ticks), or None if it cannot be opened."""
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    times = (ctypes.c_ulonglong * 4)()
+    ok = kernel32.GetProcessTimes(handle, *(ctypes.byref(times, 8 * i) for i in range(4)))
+    kernel32.CloseHandle(handle)
+    return times[0] if ok else None
+
+
 def descendants(pid):
+    """{pid: exe name} of the processes `pid` started, and theirs. A parent pid
+    can be stale (that parent died and its pid went to a new process), so a
+    child only counts if it started after its parent."""
     table = process_table()
     found, queue = {}, [pid]
     while queue:
         parent = queue.pop()
+        born = start_time(parent)
         for child, (parent_of_child, exe) in table.items():
-            if parent_of_child == parent and child not in found:
+            if parent_of_child != parent or child in found or born is None:
+                continue
+            child_born = start_time(child)
+            if child_born is not None and child_born >= born:
                 found[child] = exe
                 queue.append(child)
     return found
@@ -390,6 +427,10 @@ def main():
         sys.exit(f"{EXE} not found: run `cargo build --release` first")
     if not shutil.which("pi"):
         sys.exit("pi is not on PATH: this test checks that the app finds it there")
+    if HEADLESS:
+        join_headless_desktop()
+    else:
+        os.environ.pop("PI_GPUI_HEADLESS", None)
 
     sandbox = tempfile.mkdtemp(prefix="pi-gpui-smoke-")
     home, auto, project = (os.path.join(sandbox, name) for name in ("home", "auto", "my project"))
@@ -399,7 +440,7 @@ def main():
     env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
     env.pop("PI_EXECUTABLE", None)
 
-    print(f"exe      {EXE}\nsandbox  {sandbox}\n")
+    print(f"exe      {EXE}\nsandbox  {sandbox}\nheadless {HEADLESS}\n")
     log = open(log_path, "w")
     app = subprocess.Popen([EXE, project], env=env, stdout=log, stderr=subprocess.STDOUT)
     driver = Automation(auto)
@@ -440,8 +481,10 @@ def main():
             check("screenshot file was written", False)
 
         # --- focus and console windows
-        check("automation does not take the focus (best effort: Windows may block a focus steal anyway)", foreground_pid() != app.pid,
-              f"foreground pid {foreground_pid()}")
+        # Headless there is nothing else on the desktop to keep the focus.
+        if not HEADLESS:
+            check("automation does not take the focus (best effort: Windows may block a focus steal anyway)",
+                  foreground_pid() != app.pid, f"foreground pid {foreground_pid()}")
 
         # --- the project is saved without the verbatim prefix
         state_path = os.path.join(home, ".config", "pi-gpui", "state.json")
@@ -505,7 +548,11 @@ def main():
               before_paste and after_paste and before_paste != after_paste)
 
         everyone = {app.pid, *descendants(app.pid)}
-        consoles = [w for w in visible_windows(everyone) if w[0] not in ("Zed::Window",)]
+        # Windows' input-language indicator lives in the app's process (shown on a
+        # fresh hidden desktop): system UI, not ours.
+        consoles = [w for w in visible_windows(everyone)
+                    if w[0] != "Zed::Window" and not w[0].replace(" ", "_").startswith("UAC_Input_Indicator")
+                    and not w[0].startswith("UAC_InputIndicator")]
         check("no console or stray window appears", not consoles, consoles)
         check("the app's own window is visible", any(w[0] == "Zed::Window" for w in visible_windows({app.pid})))
 

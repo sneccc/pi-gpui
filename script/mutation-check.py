@@ -2,7 +2,8 @@
 and runs `cargo test`; a mutation the tests do not catch is reported.
 
     python -I script/mutation-check.py          # unit tests catch these
-    python -I script/mutation-check.py --e2e    # windows-smoke.py catches these
+    python -I script/mutation-check.py --e2e    # windows-smoke.py catches these (headless)
+    ... --only TEXT                             # only the mutations whose name contains TEXT
 
 Each source file is restored afterwards, even on Ctrl+C. Run it on a clean
 working tree so a crash cannot lose changes: it works on copies in memory
@@ -187,6 +188,10 @@ def tests_pass(e2e=False):
 def main():
     e2e = "--e2e" in sys.argv[1:]
     mutations = E2E_MUTATIONS if e2e else MUTATIONS
+    if "--only" in sys.argv[1:]:
+        # --only TEXT: just the mutations whose name contains TEXT
+        wanted = sys.argv[sys.argv.index("--only") + 1].lower()
+        mutations = [m for m in mutations if wanted in m[0].lower()]
     survived = []
     for name, file, original, mutated in mutations:
         path = os.path.join(ROOT, file)

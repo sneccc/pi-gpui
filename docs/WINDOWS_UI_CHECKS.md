@@ -2,6 +2,18 @@
 
 The app can be driven from a script: it takes keys and clicks and saves pictures of its own window. The real pointer and keyboard stay free and the window can sit behind other windows. The code is `src/automation.rs` (shared) and `src/automation/windows.rs`. Unlike macOS it is in release builds too, but it only turns on when `PI_GPUI_AUTOMATION` is set. The commands are the same as on macOS, see [MAC_UI_CHECKS.md](MAC_UI_CHECKS.md).
 
+## Headless (preferred)
+
+`PI_GPUI_HEADLESS=1` opens the window on a hidden desktop: it paints, answers automation and saves screenshots, but never pops up, never shows in the taskbar and never takes the focus. The smoke test uses it unless you pass `--show`. For debugging by hand, `script/debug/app.py` starts the app headless in a sandbox and drives it (see [script/debug/README.md](../script/debug/README.md)):
+
+```bat
+python -I script\debug\app.py start C:\path\to\project
+python -I script\debug\app.py do "key ctrl-n" "wait 500" shot
+python -I script\debug\app.py stop
+```
+
+Tools that look at windows from outside (`EnumWindows`, `FindWindow`, posted messages) must run on the same desktop: call `SetThreadDesktop` with the `pi-gpui-headless` desktop first, as the smoke test and `app.py` do.
+
 ## Start
 
 ```bat
@@ -38,10 +50,11 @@ Three layers, cheapest first:
 | End-to-end smoke test: starts the real exe in a sandbox and drives it through the protocol above | `python -I script/windows-smoke.py` | a release build, `pi` on PATH |
 | Mutation check: puts one bug at a time into the source and requires the tests to fail | `python -I script/mutation-check.py` (unit), `--e2e` (smoke test) | a clean working tree |
 
-The smoke test sends no prompt, so it costs no tokens. It checks that pi is found without `PI_EXECUTABLE`, that bad commands report errors, that a screenshot has real content, that a click changes the window, that the saved project path has no `\?\` prefix, that no console window appears, and that closing a session or quitting leaves no pi process behind.
+The smoke test sends no prompt, so it costs no tokens. It checks that pi is found without `PI_EXECUTABLE`, that bad commands report errors, that a screenshot has real content, that a click changes the window, that the saved project path has no `\?\` prefix, that no console window appears, that closing a session or quitting leaves no pi process behind, that the caption buttons and a caption double click work, that killing the app stops pi too, that pasting a file copied in Explorer works, and that a second launch hands its folder or `pi-gpui://` link to the running app and exits.
 
 Notes from writing them:
 
 - Opening a folder starts a session of its own, so the app has one pi before you press Ctrl+N. The smoke test tracks process ids per session because of this.
 - Clicking the empty transcript takes the focus off the chat, and then Ctrl+W no longer reaches the session. Click a button, not the page, between steps.
-- The focus check is best effort: Windows' foreground lock stops a background-launched app from taking the focus even when it asks to, so a regression there cannot be caught.
+- Headless, Windows' input-language indicator (`UAC_InputIndicator*`) shows up as a window of the app's process; the stray-window check ignores it.
+- The focus check is best effort (and skipped headless): Windows' foreground lock stops a background-launched app from taking the focus even when it asks to, so a regression there cannot be caught.

@@ -3,3 +3,6 @@
 .wrangler/
 
 .private/
+
+# Throwaway debug files (probes, screenshots, the headless sandbox): see script/debug/README.md
+.scratch/

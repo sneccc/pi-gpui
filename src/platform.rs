@@ -44,6 +44,61 @@ pub fn start_window_drag(window: &Window) {
     }
 }
 
+/// The hidden desktop `PI_GPUI_HEADLESS=1` puts the window on.
+#[cfg(windows)]
+pub const HEADLESS_DESKTOP: &str = "pi-gpui-headless";
+
+/// Windows, for tests and debugging: with `PI_GPUI_HEADLESS=1` the window
+/// opens on a hidden desktop of its own, so it never pops up, never shows in
+/// the taskbar and never takes the focus, yet it still paints. Drive it with
+/// `PI_GPUI_AUTOMATION` (`shot` works there). Call it first thing in `main`,
+/// before the thread owns any window.
+#[cfg(windows)]
+pub fn enter_headless_desktop() {
+    if std::env::var_os("PI_GPUI_HEADLESS").is_none_or(|value| value.is_empty() || value == "0") {
+        return;
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn CreateDesktopW(
+            name: *const u16,
+            device: *const u16,
+            mode: *const std::ffi::c_void,
+            flags: u32,
+            access: u32,
+            security: *const std::ffi::c_void,
+        ) -> isize;
+        fn SetThreadDesktop(desktop: isize) -> i32;
+    }
+    const GENERIC_ALL: u32 = 0x1000_0000;
+
+    let name: Vec<u16> = HEADLESS_DESKTOP.encode_utf16().chain([0]).collect();
+    // SAFETY: a NUL-terminated name and null optional arguments. The handle is
+    // kept open for the life of the process (the desktop lives as long as it).
+    let switched = unsafe {
+        let desktop = CreateDesktopW(
+            name.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            GENERIC_ALL,
+            std::ptr::null(),
+        );
+        desktop != 0 && SetThreadDesktop(desktop) != 0
+    };
+    if switched {
+        eprintln!("pi-gpui: headless, the window is on the hidden desktop {HEADLESS_DESKTOP}");
+    } else {
+        eprintln!(
+            "pi-gpui: PI_GPUI_HEADLESS is set but the hidden desktop failed ({}); showing the window",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn enter_headless_desktop() {}
+
 /// Brings a minimized window back (a second launch hands over to the running
 /// app, which may sit in the taskbar). Only Windows needs it: elsewhere
 /// activating the window does it.

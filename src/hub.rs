@@ -811,7 +811,9 @@ impl HubView {
         let request = crate::open_url::parse(url);
         let Some(workspace) = request
             .as_ref()
-            .and_then(|request| PathBuf::from(&request.workspace).canonicalize().ok())
+            .and_then(|request| {
+                crate::sessions::canonical_path(&PathBuf::from(&request.workspace)).ok()
+            })
             .filter(|path| path.is_dir())
         else {
             self.notice = Some((
@@ -839,7 +841,7 @@ impl HubView {
     }
 
     fn add_workspace(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let path = path.canonicalize().unwrap_or(path);
+        let path = crate::sessions::canonical_path(&path).unwrap_or(path);
         if let Some(entry) = self.entry_mut(&path) {
             entry.expanded = true;
         } else {
@@ -1526,7 +1528,7 @@ impl HubView {
         let Some(workspace) = params["workspace"]
             .as_str()
             .map(PathBuf::from)
-            .and_then(|path| path.canonicalize().ok())
+            .and_then(|path| crate::sessions::canonical_path(&path).ok())
             .filter(|path| path.is_dir())
         else {
             reply.finish(

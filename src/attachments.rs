@@ -52,7 +52,11 @@ pub fn link_file(original: &Path) -> std::io::Result<PathBuf> {
         .join(unique_id());
     std::fs::create_dir_all(&directory)?;
     let link = directory.join(name);
+    #[cfg(unix)]
     std::os::unix::fs::symlink(original, &link)?;
+    // Symlinks need a privilege on Windows: copy instead.
+    #[cfg(not(unix))]
+    std::fs::copy(original, &link).map(|_| ())?;
     Ok(link)
 }
 
@@ -93,14 +97,26 @@ pub fn save_clipboard_image(image: &gpui::Image) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Where a path may begin at or after byte `from`: a `/`, or on Windows
+/// also a drive letter as in `C:\` or `C:/`.
+fn next_path_start(text: &str, from: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    (from..bytes.len()).find(|&index| {
+        bytes[index] == b'/'
+            || (cfg!(windows)
+                && bytes[index].is_ascii_alphabetic()
+                && bytes.get(index + 1) == Some(&b':')
+                && matches!(bytes.get(index + 2), Some(b'\\' | b'/')))
+    })
+}
+
 /// Absolute paths of existing image files mentioned in `text`, in order.
-/// Paths may contain spaces, so every `/` that starts a word is tried
-/// against every image extension that follows it.
+/// Paths may contain spaces, so every `/` (or Windows drive) that starts a
+/// word is tried against every image extension that follows it.
 pub fn image_paths_in(text: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut search_from = 0;
-    while let Some(relative) = text[search_from..].find('/') {
-        let start = search_from + relative;
+    while let Some(start) = next_path_start(text, search_from) {
         search_from = start + 1;
         let starts_word = text[..start]
             .chars()
@@ -186,6 +202,43 @@ mod tests {
             "see [Image] now"
         );
         let _ = std::fs::remove_dir_all(&directory);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_image_paths_are_found_with_either_slash_and_in_quotes() {
+        let directory = std::env::temp_dir().join(format!("pi gpui imgs {}", unique_id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let image = directory.join("a b.PNG");
+        std::fs::write(&image, b"png").unwrap();
+        let backslashes = image.display().to_string();
+        let slashes = backslashes.replace('\\', "/");
+
+        assert_eq!(image_paths_in(&backslashes), vec![image.clone()]);
+        assert_eq!(
+            image_paths_in(&format!("see \"{backslashes}\".")),
+            vec![image.clone()]
+        );
+        assert_eq!(
+            image_paths_in(&format!("({slashes}) ok")),
+            vec![PathBuf::from(&slashes)]
+        );
+        // A file that does not exist, or a drive path inside a word, is not an image.
+        assert!(image_paths_in(r"C:\nope\missing.png").is_empty());
+        assert!(image_paths_in(&format!("x{backslashes}")).is_empty());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn next_path_start_knows_drives_but_not_plain_colons() {
+        assert_eq!(next_path_start(r"at C:\x", 0), Some(3));
+        assert_eq!(next_path_start("at d:/x", 0), Some(3));
+        assert_eq!(next_path_start("at /x", 0), Some(3));
+        // `C:` alone, `a:b`, and a start after the drive letter are not paths.
+        assert_eq!(next_path_start("C: and a:b", 0), None);
+        assert_eq!(next_path_start(r"at C:\x", 4), None);
+        // A later start is found after an earlier one.
+        assert_eq!(next_path_start(r"/a C:\b", 1), Some(3));
     }
 }
 

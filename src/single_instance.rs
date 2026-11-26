@@ -4,15 +4,30 @@
 //! listens on a socket in `$XDG_RUNTIME_DIR`; later ones hand it their link
 //! and exit.
 
+#[cfg(unix)]
 use std::io::{BufRead as _, BufReader, Write as _};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
 use std::path::PathBuf;
 
+// Windows: no single-instance handoff yet; every launch is its own process.
+#[cfg(not(unix))]
+pub const ACTIVATE: &str = "activate";
+#[cfg(not(unix))]
+pub fn forward(_message: &str) -> bool {
+    false
+}
+#[cfg(not(unix))]
+pub fn listen(_deliver: impl Fn(String) + Send + 'static) {}
+
 /// Sent when the app is launched again without a link: bring it forward.
+#[cfg(unix)]
 pub const ACTIVATE: &str = "activate";
 
 /// Hands `message` to an app that is already running. `true` when it took
 /// it, so this process should exit.
+#[cfg(unix)]
 pub fn forward(message: &str) -> bool {
     let Some(path) = socket_path() else {
         return false;
@@ -25,6 +40,7 @@ pub fn forward(message: &str) -> bool {
 
 /// Listens for later launches; each message goes to `deliver` on a
 /// background thread.
+#[cfg(unix)]
 pub fn listen(deliver: impl Fn(String) + Send + 'static) {
     let Some(path) = socket_path() else {
         return;
@@ -51,6 +67,7 @@ pub fn listen(deliver: impl Fn(String) + Send + 'static) {
     });
 }
 
+#[cfg(unix)]
 fn socket_path() -> Option<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)

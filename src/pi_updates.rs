@@ -7,7 +7,6 @@
 //! until an app release supports it.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -75,7 +74,7 @@ pub fn check(installation: &Installation) -> Updates {
 
 /// Runs `pi update <args>` and returns its output. Blocking.
 pub fn run(installation: &Installation, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(&installation.executable)
+    let output = crate::process::command(&installation.executable)
         .arg("update")
         .args(args)
         .env(
@@ -104,7 +103,7 @@ pub fn run(installation: &Installation, args: &[&str]) -> Result<String, String>
 
 /// `(source, install path)` pairs from `pi list`.
 fn installed_packages(installation: &Installation) -> Vec<(String, PathBuf)> {
-    let Ok(output) = Command::new(&installation.executable)
+    let Ok(output) = crate::process::command(&installation.executable)
         .arg("list")
         .env(
             "PATH",
@@ -157,7 +156,7 @@ fn package_version(path: &Path) -> Option<String> {
 }
 
 fn latest_version(name: &str) -> Option<String> {
-    let output = Command::new("curl")
+    let output = crate::process::command("curl")
         .args(["-fsSL", "--max-time", "15"])
         .arg(format!("https://registry.npmjs.org/{name}/latest"))
         .output()

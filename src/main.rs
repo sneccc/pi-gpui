@@ -1,5 +1,8 @@
+// No console window on Windows release builds.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod attachments;
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(any(all(debug_assertions, target_os = "macos"), windows))]
 mod automation;
 mod chat;
 mod diff;
@@ -15,6 +18,7 @@ mod pi;
 mod pi_updates;
 mod platform;
 mod plugins;
+mod process;
 mod selectable;
 mod session_links;
 mod session_search;
@@ -66,7 +70,7 @@ fn main() {
         .nth(1)
         .filter(|_| initial_link.is_none())
         .map(PathBuf::from)
-        .map(|path| match path.canonicalize() {
+        .map(|path| match sessions::canonical_path(&path) {
             Ok(path) if path.is_dir() => path,
             Ok(path) => {
                 eprintln!("pi-gpui: {} is not a directory", path.display());
@@ -164,9 +168,9 @@ fn main() {
         };
 
         // A window driven by automation stays behind the user's work.
-        #[cfg(all(debug_assertions, target_os = "macos"))]
+        #[cfg(any(all(debug_assertions, target_os = "macos"), windows))]
         let activate = automation::folder().is_none();
-        #[cfg(not(all(debug_assertions, target_os = "macos")))]
+        #[cfg(not(any(all(debug_assertions, target_os = "macos"), windows)))]
         let activate = true;
         let focused = window.update(cx, |view, window, cx| {
             window.focus(&view.focus_handle(cx));
@@ -177,7 +181,7 @@ fn main() {
         if let Err(error) = focused {
             eprintln!("pi-gpui: failed to focus the window: {error:#}");
         }
-        #[cfg(all(debug_assertions, target_os = "macos"))]
+        #[cfg(any(all(debug_assertions, target_os = "macos"), windows))]
         automation::start(window.into(), cx);
 
         cx.spawn(async move |cx| {

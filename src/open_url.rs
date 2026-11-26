@@ -37,10 +37,13 @@ pub fn parse(url: &str) -> Option<OpenRequest> {
 /// Linux only: a second launch hands its folder to the running app.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn workspace_link(workspace: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt as _;
-
     let mut link = String::from("pi-gpui://open?workspace=");
-    for &byte in workspace.as_os_str().as_bytes() {
+    for &byte in workspace.as_os_str().as_encoded_bytes() {
+        let byte = if cfg!(windows) && byte == b'\\' {
+            b'/'
+        } else {
+            byte
+        };
         if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
             link.push(byte as char);
         } else {
@@ -103,5 +106,29 @@ mod tests {
         assert_eq!(parse("pi-gpui://open?session=/tmp/a.jsonl"), None);
         assert_eq!(parse("pi-gpui://settings"), None);
         assert_eq!(parse("https://pi-gpui.dev"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_workspace_links_use_forward_slashes_and_round_trip() {
+        let path = std::path::Path::new(r"C:\Users\me\my app+1");
+        let link = workspace_link(path);
+        assert!(!link.contains('\\'), "no raw backslash in {link}");
+        assert!(link.starts_with("pi-gpui://open?workspace="));
+        // The path comes back with `/`, which Windows accepts as a separator.
+        let workspace = parse(&link).unwrap().workspace;
+        assert_eq!(workspace, "C:/Users/me/my app+1");
+        assert_eq!(
+            std::path::PathBuf::from(&workspace),
+            std::path::PathBuf::from(r"C:\Users\me\my app+1")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_links_with_a_drive_letter_parse() {
+        let request = parse("pi-gpui://open?workspace=C:/Users/me/p&session=C:/s/a.jsonl").unwrap();
+        assert_eq!(request.workspace, "C:/Users/me/p");
+        assert_eq!(request.session.as_deref(), Some("C:/s/a.jsonl"));
     }
 }

@@ -124,7 +124,7 @@ pub fn move_to_trash(path: &std::path::Path) -> Result<(), String> {
 /// `gio trash` (GLib, on GNOME and most other desktops), then `kioclient`
 /// (KDE), then `trash-put` (trash-cli). Never deletes for good: without any of
 /// them the file stays where it is.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn move_to_trash(path: &std::path::Path) -> Result<(), String> {
     use std::process::Command;
 
@@ -155,10 +155,73 @@ pub fn move_to_trash(path: &std::path::Path) -> Result<(), String> {
     Err("no trash tool found (install gio, kioclient or trash-cli)".to_string())
 }
 
+/// Moves a file to the Recycle Bin (`SHFileOperationW` with `FOF_ALLOWUNDO`),
+/// so a deleted session can still be restored.
+#[cfg(windows)]
+pub fn move_to_trash(path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    #[repr(C)]
+    struct ShFileOpStruct {
+        hwnd: isize,
+        function: u32,
+        from: *const u16,
+        to: *const u16,
+        flags: u16,
+        aborted: i32,
+        mappings: *mut std::ffi::c_void,
+        title: *const u16,
+    }
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHFileOperationW(operation: *mut ShFileOpStruct) -> i32;
+    }
+    const FO_DELETE: u32 = 3;
+    const FOF_SILENT: u16 = 0x0004;
+    const FOF_NOCONFIRMATION: u16 = 0x0010;
+    const FOF_ALLOWUNDO: u16 = 0x0040;
+    const FOF_NOERRORUI: u16 = 0x0400;
+
+    // The recycle bin does not take `\?\` paths, and the list must end in two nuls.
+    let text = path.to_string_lossy();
+    let plain = std::path::Path::new(text.strip_prefix(r"\\?\").unwrap_or(&text));
+    let mut from: Vec<u16> = plain.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let mut operation = ShFileOpStruct {
+        hwnd: 0,
+        function: FO_DELETE,
+        from: from.as_ptr(),
+        to: std::ptr::null(),
+        flags: FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT,
+        aborted: 0,
+        mappings: std::ptr::null_mut(),
+        title: std::ptr::null(),
+    };
+    // SAFETY: `operation` and the nul-terminated `from` outlive the call.
+    let code = unsafe { SHFileOperationW(&mut operation) };
+    if code == 0 && operation.aborted == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "the file could not be moved to the Recycle Bin (error {code:#x})"
+        ))
+    }
+}
+
 /// Shows the file in Finder, or in the file manager on Linux.
 pub fn reveal_in_file_manager(path: &std::path::Path) {
     use std::process::Command;
 
+    // Explorer selects the file; it needs the argument unquoted by Rust.
+    #[cfg(windows)]
+    let result = {
+        use std::os::windows::process::CommandExt as _;
+        Command::new("explorer.exe")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .spawn()
+            .map(drop)
+    };
+    #[cfg(not(windows))]
     let result = if cfg!(target_os = "macos") {
         Command::new("open").arg("-R").arg(path).spawn().map(drop)
     } else {
@@ -196,6 +259,13 @@ pub fn reveal_in_file_manager(path: &std::path::Path) {
 pub fn open_in_editor(path: &std::path::Path) {
     use std::process::Command;
 
+    // Zed when its CLI is installed, otherwise whatever Windows opens it with.
+    #[cfg(windows)]
+    let result = match crate::pi::find_executable("zed") {
+        Some(zed) => crate::process::command(zed).arg(path).spawn().map(drop),
+        None => Command::new("explorer.exe").arg(path).spawn().map(drop),
+    };
+    #[cfg(not(windows))]
     let result = if cfg!(target_os = "macos") {
         let zed = std::path::Path::new("/Applications/Zed.app");
         let mut command = Command::new("open");
@@ -220,6 +290,7 @@ pub fn open_in_editor(path: &std::path::Path) {
     }
 }
 
+#[cfg(not(windows))]
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|directory| directory.join(program).is_file())
@@ -227,11 +298,10 @@ fn on_path(program: &str) -> bool {
 }
 
 /// `file://` URI with the bytes that need it percent-encoded.
+#[cfg(not(windows))]
 fn file_uri(path: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt as _;
-
     let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_bytes() {
+    for &byte in path.as_os_str().as_encoded_bytes() {
         if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
             uri.push(byte as char);
         } else {
@@ -379,4 +449,23 @@ pub async fn pick_folders(prompt: &str) -> Result<Option<Vec<std::path::PathBuf>
         let _: () = msg_send![panel, beginWithCompletionHandler: &*block];
     }
     Ok(done_rx.await.unwrap_or(None))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trash_moves_a_file_to_the_recycle_bin() {
+        let file = std::env::temp_dir().join(format!("pi-gpui-trash-{}.txt", std::process::id()));
+        std::fs::write(&file, "bye").unwrap();
+        move_to_trash(&file).expect("recycled");
+        assert!(!file.exists());
+        // A verbatim path, as std's canonicalize gives, works too.
+        let other = std::env::temp_dir().join(format!("pi-gpui-trash2-{}.txt", std::process::id()));
+        std::fs::write(&other, "bye").unwrap();
+        move_to_trash(&other.canonicalize().unwrap()).expect("recycled");
+        assert!(!other.exists());
+        assert!(move_to_trash(&file).is_err(), "a missing file is an error");
+    }
 }

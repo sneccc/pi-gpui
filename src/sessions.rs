@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
@@ -103,6 +104,7 @@ fn setting_session_dir(settings_path: &Path) -> Option<PathBuf> {
 /// `/Users/me/project` → `--Users-me-project--`, as documented in pi's session format.
 fn encode_workspace(workspace: &Path) -> String {
     let path = workspace.to_string_lossy();
+    let path = strip_verbatim(&path);
     let trimmed = path.trim_start_matches(['/', '\\']);
     format!("--{}--", trimmed.replace(['/', '\\', ':'], "-"))
 }
@@ -186,6 +188,38 @@ pub fn foreign_lease_holder(session: &Path) -> Option<String> {
     )
 }
 
+/// Whether a process with this id is running (Windows: it has not exited).
+#[cfg(windows)]
+fn process_is_alive(pid: u64) -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+        fn GetLastError() -> u32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+
+    let Ok(pid) = u32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: plain kernel32 calls; the handle is closed before returning.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process == 0 {
+            // Another user's process exists but cannot be opened.
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut code = 0;
+        let alive = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE;
+        CloseHandle(process);
+        alive
+    }
+}
+
+#[cfg(not(windows))]
 fn process_is_alive(pid: u64) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -243,7 +277,10 @@ pub fn display_path(path: &Path) -> String {
 }
 
 pub fn home_directory() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    // Windows has no HOME unless launched from a Unix-style shell.
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 /// The app's own files (settings, projects, plugins): `~/Library/Application
@@ -273,9 +310,30 @@ fn xdg_directory(variable: &str, fallback: &str) -> Option<PathBuf> {
         .or_else(|| Some(home_directory()?.join(fallback)))
 }
 
+/// `canonicalize` without Windows' `\\?\` prefix, which pi does not use in
+/// session paths or `cwd`. Identical to `canonicalize` elsewhere.
+pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = path.canonicalize()?;
+    let plain = strip_verbatim(&canonical.to_string_lossy()).to_string();
+    if canonical.to_string_lossy() == plain {
+        Ok(canonical)
+    } else {
+        Ok(PathBuf::from(plain))
+    }
+}
+
+/// `\\?\C:\dir` → `C:\dir`. Only drive paths: a verbatim UNC share
+/// (`\\?\UNC\server\share`) or volume path has no plain form this simple.
+fn strip_verbatim(path: &str) -> &str {
+    match path.strip_prefix(r"\\?\") {
+        Some(plain) if plain.as_bytes().get(1) == Some(&b':') => plain,
+        _ => path,
+    }
+}
+
 pub(crate) fn same_directory(cwd: &str, workspace: &Path) -> bool {
     let cwd = Path::new(cwd);
-    cwd == workspace || cwd.canonicalize().is_ok_and(|cwd| cwd == workspace)
+    cwd == workspace || canonical_path(cwd).is_ok_and(|cwd| cwd == workspace)
 }
 
 pub(crate) fn trim_line(line: &[u8]) -> &[u8] {
@@ -297,6 +355,33 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    #[cfg(windows)]
+    #[test]
+    fn canonical_path_has_no_verbatim_prefix() {
+        let directory = std::env::temp_dir().canonicalize().expect("canonical");
+        let plain = canonical_path(&directory).expect("canonical");
+        assert!(!plain.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(canonical_path(&plain).expect("canonical"), plain);
+        assert_eq!(
+            encode_workspace(&directory),
+            encode_workspace(&plain),
+            "session folder names ignore the prefix"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_live_and_dead_processes() {
+        assert!(process_is_alive(u64::from(std::process::id())));
+        let mut child = crate::process::command("cmd")
+            .args(["/c", "exit 0"])
+            .spawn()
+            .expect("spawn");
+        let pid = u64::from(child.id());
+        child.wait().expect("wait");
+        assert!(!process_is_alive(pid));
+    }
+
     #[test]
     fn workspace_encoding_matches_pi() {
         assert_eq!(
@@ -309,15 +394,17 @@ mod tests {
     fn title_prefers_latest_session_name() {
         let directory = std::env::temp_dir().join(format!("pi-gpui-test-{}", std::process::id()));
         fs::create_dir_all(&directory).expect("temp dir");
-        let workspace = directory.canonicalize().expect("canonical");
+        let workspace = canonical_path(&directory).expect("canonical");
         let session = workspace.join("session.jsonl");
         let mut file = File::create(&session).expect("session file");
-        writeln!(
-            file,
-            r#"{{"type":"session","version":3,"id":"x","cwd":"{}"}}"#,
-            workspace.display()
-        )
-        .expect("write");
+        // JSON escapes the backslashes of a Windows path.
+        let header = serde_json::json!({
+            "type": "session",
+            "version": 3,
+            "id": "x",
+            "cwd": workspace.to_string_lossy(),
+        });
+        writeln!(file, "{header}").expect("write");
         writeln!(file, r#"{{"type":"message","id":"a","message":{{"role":"user","content":"  \nFirst question\nsecond line"}}}}"#).expect("write");
         drop(file);
         assert_eq!(
@@ -342,5 +429,63 @@ mod tests {
 
         assert_eq!(read_title(&session, Path::new("/elsewhere")), None);
         fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn windows_paths_encode_the_way_pi_names_session_folders() {
+        // Seen on disk: ~/.pi/agent/sessions/--P--Projects-svg_experiments--
+        assert_eq!(
+            encode_workspace(Path::new(r"P:\Projects\svg_experiments")),
+            "--P--Projects-svg_experiments--"
+        );
+        assert_eq!(
+            encode_workspace(Path::new(r"C:\Users\Daniel")),
+            "--C--Users-Daniel--"
+        );
+        // Forward slashes (as in `pi-gpui://` links) give the same name.
+        assert_eq!(
+            encode_workspace(Path::new("P:/Projects/svg_experiments")),
+            "--P--Projects-svg_experiments--"
+        );
+    }
+
+    #[test]
+    fn the_verbatim_prefix_does_not_change_the_session_folder() {
+        assert_eq!(
+            encode_workspace(Path::new(r"\\?\P:\Projects\x")),
+            encode_workspace(Path::new(r"P:\Projects\x")),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_same_directory_matches_across_prefix_and_case() {
+        let directory = std::env::temp_dir().join(format!("pi-gpui-same-{}", std::process::id()));
+        fs::create_dir_all(&directory).expect("temp dir");
+        let workspace = canonical_path(&directory).expect("canonical");
+        let text = workspace.to_string_lossy().to_string();
+        // pi writes the cwd it was started in: plain, verbatim or differently cased.
+        assert!(same_directory(&text, &workspace));
+        assert!(same_directory(&format!(r"\\?\{text}"), &workspace));
+        assert!(same_directory(&text.to_uppercase(), &workspace));
+        assert!(same_directory(&text.replace('\\', "/"), &workspace));
+        assert!(!same_directory(r"\elsewhere\else", &workspace));
+        fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn strip_verbatim_only_touches_drive_paths() {
+        assert_eq!(strip_verbatim(r"\\?\C:\dir\x"), r"C:\dir\x");
+        assert_eq!(strip_verbatim(r"\\?\p:"), "p:");
+        // Already plain, Unix, or relative: unchanged.
+        assert_eq!(strip_verbatim(r"C:\dir"), r"C:\dir");
+        assert_eq!(strip_verbatim("/home/me"), "/home/me");
+        assert_eq!(strip_verbatim(""), "");
+        // A UNC share or a volume GUID has no drive: stripping would break it.
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\server\share"),
+            r"\\?\UNC\server\share"
+        );
+        assert_eq!(strip_verbatim(r"\\?\Volume{1234}\x"), r"\\?\Volume{1234}\x");
     }
 }

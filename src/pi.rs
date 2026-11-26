@@ -164,7 +164,7 @@ pub fn check_installation() -> Result<Installation, CheckError> {
     let executable = discover().ok_or(CheckError::NotFound)?;
     remember_node_directory(&executable);
     let output = run_with_timeout(
-        Command::new(&executable)
+        crate::process::command(&executable)
             .arg("--version")
             .env("PATH", path_with_executable_dir(&executable)),
         COMMAND_TIMEOUT,
@@ -205,10 +205,18 @@ fn discover() -> Option<PathBuf> {
 pub fn find_executable(name: &str) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PATH")
         && let Some(found) = std::env::split_paths(&path)
-            .map(|directory| directory.join(name))
+            .flat_map(|directory| {
+                executable_names(name)
+                    .into_iter()
+                    .map(move |file| directory.join(file))
+            })
             .find(|candidate| candidate.is_file())
     {
         return Some(found);
+    }
+    // There is no login shell to ask on Windows.
+    if cfg!(windows) {
+        return None;
     }
 
     // `name` comes from our code or a plugin manifest: only plain names are looked up.
@@ -226,7 +234,7 @@ pub fn find_executable(name: &str) -> Option<PathBuf> {
         })
     });
     let output = run_with_timeout(
-        Command::new(shell).args(["-ilc", &format!("command -v {name}")]),
+        crate::process::command(shell).args(["-ilc", &format!("command -v {name}")]),
         COMMAND_TIMEOUT,
     )
     .ok()?;
@@ -241,13 +249,34 @@ pub fn find_executable(name: &str) -> Option<PathBuf> {
         .filter(|path| path.is_file())
 }
 
+/// The file names `name` can have in a PATH directory. On Windows a program
+/// is `name.exe` or a `name.cmd` / `name.bat` script (npm's shims): a bare
+/// `pi` next to them is a shell script that cannot be started.
+fn executable_names(name: &str) -> Vec<String> {
+    if !cfg!(windows) {
+        return vec![name.to_string()];
+    }
+    let has_extension = [".exe", ".cmd", ".bat", ".com"]
+        .iter()
+        .any(|extension| name.to_ascii_lowercase().ends_with(extension));
+    if has_extension {
+        return vec![name.to_string()];
+    }
+    ["exe", "cmd", "bat", "com"]
+        .iter()
+        .map(|extension| format!("{name}.{extension}"))
+        .collect()
+}
+
 /// Finds `node` for a pi that has none next to it and keeps its directory for
 /// `path_with_executable_dir`. Every check looks again, so "Check again" picks
 /// up a node installed or switched since. Blocking.
 fn remember_node_directory(executable: &Path) {
-    let beside_pi = executable
-        .parent()
-        .is_some_and(|directory| directory.join("node").is_file());
+    let beside_pi = executable.parent().is_some_and(|directory| {
+        executable_names("node")
+            .iter()
+            .any(|node| directory.join(node).is_file())
+    });
     let directory = if beside_pi {
         None
     } else {
@@ -361,7 +390,7 @@ pub fn spawn_pi(
     session: Option<&Path>,
     extensions: &[PathBuf],
 ) -> std::io::Result<(JsonlProcess, mpsc::Receiver<JsonlMessage>)> {
-    let mut command = Command::new(&installation.executable);
+    let mut command = crate::process::command(&installation.executable);
     command.args(["--mode", "rpc"]);
     if let Some(bridge) = bridge_extension() {
         command.arg("--extension").arg(bridge);
@@ -486,29 +515,60 @@ mod tests {
         assert_eq!(Version::find_in("no version"), None);
     }
 
+    /// PATH lists joined with the platform's separator (`:` or `;`).
+    fn paths(directories: &[&str]) -> OsString {
+        std::env::join_paths(directories).expect("joinable")
+    }
+
     #[test]
     fn node_directory_goes_after_the_inherited_path() {
         let path = child_path(
             Path::new("/pi/bin/pi"),
-            Some(OsStr::new("/usr/bin:/bin")),
+            Some(&paths(&["/usr/bin", "/bin"])),
             Some(Path::new("/mise/node/bin")),
         );
-        assert_eq!(path, OsString::from("/pi/bin:/usr/bin:/bin:/mise/node/bin"));
+        assert_eq!(
+            path,
+            paths(&["/pi/bin", "/usr/bin", "/bin", "/mise/node/bin"])
+        );
     }
 
     #[test]
     fn node_directory_already_on_the_path_keeps_its_place() {
         let path = child_path(
             Path::new("/pi/bin/pi"),
-            Some(OsStr::new("/pyenv/shims:/usr/bin")),
+            Some(&paths(&["/pyenv/shims", "/usr/bin"])),
             Some(Path::new("/usr/bin")),
         );
-        assert_eq!(path, OsString::from("/pi/bin:/pyenv/shims:/usr/bin"));
+        assert_eq!(path, paths(&["/pi/bin", "/pyenv/shims", "/usr/bin"]));
     }
 
     #[test]
     fn path_without_a_remembered_node_is_unchanged() {
-        let path = child_path(Path::new("/pi/bin/pi"), Some(OsStr::new("/usr/bin")), None);
-        assert_eq!(path, OsString::from("/pi/bin:/usr/bin"));
+        let path = child_path(Path::new("/pi/bin/pi"), Some(&paths(&["/usr/bin"])), None);
+        assert_eq!(path, paths(&["/pi/bin", "/usr/bin"]));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_finds_cmd_shims_not_bare_scripts() {
+        let directory = std::env::temp_dir().join(format!("pi-gpui-find-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("fakepi"), "#!/bin/sh").unwrap();
+        std::fs::write(directory.join("fakepi.cmd"), "@echo off").unwrap();
+        let path = std::env::join_paths([&directory]).unwrap();
+        let search = |name: &str| {
+            std::env::split_paths(&path)
+                .flat_map(|directory| {
+                    executable_names(name)
+                        .into_iter()
+                        .map(move |file| directory.join(file))
+                })
+                .find(|candidate| candidate.is_file())
+        };
+        assert_eq!(search("fakepi"), Some(directory.join("fakepi.cmd")));
+        assert_eq!(search("fakepi.cmd"), Some(directory.join("fakepi.cmd")));
+        assert_eq!(search("nothing"), None);
+        std::fs::remove_dir_all(&directory).ok();
     }
 }

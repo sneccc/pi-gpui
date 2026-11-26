@@ -193,6 +193,7 @@ fn main() {
                     for url in urls.iter().filter(|url| url.as_str() != "activate") {
                         view.open_url(url, cx);
                     }
+                    platform::restore_if_minimized(window);
                     window.activate_window();
                 });
                 if opened.is_err() {

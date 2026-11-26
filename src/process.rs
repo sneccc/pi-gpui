@@ -165,6 +165,13 @@ mod tests {
         exe: [u16; 260],
     }
 
+    impl Entry {
+        fn exe_name(&self) -> String {
+            let length = self.exe.iter().position(|&unit| unit == 0).unwrap_or(260);
+            String::from_utf16_lossy(&self.exe[..length]).to_lowercase()
+        }
+    }
+
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
@@ -173,8 +180,8 @@ mod tests {
         fn CloseHandle(handle: isize) -> i32;
     }
 
-    /// `(pid, parent pid)` of every running process.
-    fn processes() -> Vec<(u32, u32)> {
+    /// `(pid, parent pid, exe name)` of every running process.
+    fn processes() -> Vec<(u32, u32, String)> {
         let mut all = Vec::new();
         // SAFETY: a toolhelp snapshot walked with correctly sized entries.
         unsafe {
@@ -193,7 +200,7 @@ mod tests {
             };
             let mut more = Process32FirstW(snapshot, &mut entry);
             while more != 0 {
-                all.push((entry.pid, entry.parent));
+                all.push((entry.pid, entry.parent, entry.exe_name()));
                 more = Process32NextW(snapshot, &mut entry);
             }
             CloseHandle(snapshot);
@@ -201,16 +208,17 @@ mod tests {
         all
     }
 
-    fn children_of(parent: u32) -> Vec<u32> {
+    /// The ping.exe that `cmd /c ping ...` runs. cmd's other child, conhost.exe,
+    /// shows up first and goes away with cmd, so it proves nothing.
+    fn ping_under(parent: u32) -> Option<u32> {
         processes()
             .into_iter()
-            .filter(|&(_, p)| p == parent)
-            .map(|(pid, _)| pid)
-            .collect()
+            .find(|(_, p, exe)| *p == parent && exe == "ping.exe")
+            .map(|(pid, _, _)| pid)
     }
 
     fn alive(pid: u32) -> bool {
-        processes().iter().any(|&(p, _)| p == pid)
+        processes().iter().any(|(p, _, _)| *p == pid)
     }
 
     fn wait_until(mut done: impl FnMut() -> bool) -> bool {
@@ -244,18 +252,16 @@ mod tests {
             .expect("spawn");
         let wrapper_id = wrapper.id();
         assert!(
-            wait_until(|| !children_of(wrapper_id).is_empty()),
-            "the wrapper started a child"
+            wait_until(|| ping_under(wrapper_id).is_some()),
+            "the wrapper started ping.exe"
         );
-        let grandchildren = children_of(wrapper_id);
+        let ping = ping_under(wrapper_id).unwrap();
 
-        // Child::kill alone would leave them: that is the bug.
+        // Child::kill alone would leave it: that is the bug.
         kill_tree(&mut wrapper).ok();
         wrapper.wait().ok();
         assert!(wait_until(|| !alive(wrapper_id)));
-        for pid in grandchildren {
-            assert!(wait_until(|| !alive(pid)), "grandchild {pid} still runs");
-        }
+        assert!(wait_until(|| !alive(ping)), "ping.exe still runs");
     }
 
     #[test]
@@ -265,20 +271,19 @@ mod tests {
             .spawn()
             .expect("spawn");
         let wrapper_id = wrapper.id();
-        assert!(wait_until(|| !children_of(wrapper_id).is_empty()));
-        let grandchildren = children_of(wrapper_id);
+        assert!(wait_until(|| ping_under(wrapper_id).is_some()));
+        let ping = ping_under(wrapper_id).unwrap();
         wrapper.kill().unwrap();
         wrapper.wait().unwrap();
         std::thread::sleep(Duration::from_millis(500));
+        let survived = alive(ping);
+        let _ = command("taskkill")
+            .args(["/F", "/PID", &ping.to_string()])
+            .output();
         assert!(
-            grandchildren.iter().any(|&pid| alive(pid)),
+            survived,
             "if this fails, Child::kill became enough and kill_tree is unneeded"
         );
-        for pid in grandchildren {
-            let _ = command("taskkill")
-                .args(["/F", "/PID", &pid.to_string()])
-                .output();
-        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - the caption buttons (minimize, maximize, close) and a caption double click work
   - killing the app without warning (a crash) stops pi too
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
+  - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
     python -I script/windows-smoke.py [path\\to\\pi-gpui.exe]
 
@@ -255,6 +256,58 @@ def crash_check(sandbox):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
 
 
+def handover_check(sandbox):
+    """A fourth launch, with a HOME of its own: later launches hand their
+    folder or pi-gpui:// link to the running app and exit."""
+    home, auto = os.path.join(sandbox, "home4"), os.path.join(sandbox, "auto4")
+    second_project = os.path.join(sandbox, "second project")
+    third_project = os.path.join(sandbox, "third project")
+    for folder in (home, auto, second_project, third_project):
+        os.makedirs(folder)
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env.pop("PI_EXECUTABLE", None)
+    app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    strays = []
+
+    def launch(*args):
+        """Runs a later launch; returns its exit code, or None if it kept running."""
+        later = subprocess.Popen([EXE, *args], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            return later.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            strays.append(later)
+            return None
+
+    def projects():
+        try:
+            state = json.load(open(os.path.join(home, ".config", "pi-gpui", "state.json")))
+        except (OSError, ValueError):
+            return []
+        return [os.path.normcase(os.path.realpath(w["path"])) for w in state["workspaces"]]
+
+    try:
+        check("handover: the first app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        started = time.time()
+        code = launch(second_project)
+        check("handover: a second launch with a folder exits by itself", code == 0, code)
+        check("handover: ... quickly (it handed over, it did not start an app)", time.time() - started < 8,
+              f"{time.time() - started:.1f} s")
+        link = "pi-gpui://open?workspace=" + third_project.replace(os.sep, "/").replace(" ", "%20").replace(":", "%3A")
+        code = launch(link)
+        check("handover: a second launch with a pi-gpui:// link exits by itself", code == 0, code)
+        code = launch()
+        check("handover: a second launch with no argument exits by itself", code == 0, code)
+        for label, folder in (("the folder argument", second_project), ("the pi-gpui:// link", third_project)):
+            wanted = os.path.normcase(os.path.realpath(folder))
+            check(f"handover: the running app opened {label}", bool(wait_for(lambda: wanted in projects(), 10)),
+                  projects())
+        check("handover: the first app is still running", app.poll() is None)
+    finally:
+        for process in (app, *strays):
+            if process.poll() is None:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+
+
 # ---------------------------------------------------------------------- PNG
 def decode_png(path):
     """(width, height, rows of RGB(A) bytes) of an 8-bit, non-interlaced PNG."""
@@ -473,6 +526,7 @@ def main():
               [pid for pid in every_pi if alive(pid)])
         window_controls_check(sandbox)
         crash_check(sandbox)
+        handover_check(sandbox)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)

@@ -127,6 +127,12 @@ E2E_MUTATIONS = [
         "        if IsClipboardFormatAvailable(CF_HDROP) != 0 {",
     ),
     (
+        "a second launch never finds the running app (no handover)",
+        "src/single_instance.rs",
+        "Ok(mut pipe) => return pipe.write_all(line.as_bytes()).is_ok(),",
+        "Ok(_) => return false,",
+    ),
+    (
         "caption buttons do nothing when clicked",
         "src/hub.rs",
         "            .on_click(move |_, window, _| act(window))\n",

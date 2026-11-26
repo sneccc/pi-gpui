@@ -44,6 +44,37 @@ pub fn start_window_drag(window: &Window) {
     }
 }
 
+/// Brings a minimized window back (a second launch hands over to the running
+/// app, which may sit in the taskbar). Only Windows needs it: elsewhere
+/// activating the window does it.
+pub fn restore_if_minimized(window: &Window) {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn IsIconic(hwnd: isize) -> i32;
+            fn ShowWindow(hwnd: isize, command: i32) -> i32;
+        }
+        const SW_RESTORE: i32 = 9;
+
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            let hwnd = win32.hwnd.get();
+            // SAFETY: queries and shows gpui's live HWND.
+            unsafe {
+                if IsIconic(hwnd) != 0 {
+                    ShowWindow(hwnd, SW_RESTORE);
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
 /// Maximizes the window, or restores it when it is already maximized. gpui's
 /// `zoom` only ever maximizes on Windows, so ask the window itself there.
 pub fn toggle_zoom(window: &Window) {

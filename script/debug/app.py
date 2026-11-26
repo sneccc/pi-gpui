@@ -185,22 +185,54 @@ def main_window():
     sys.exit("the app has no window")
 
 
+class ProcessEntry(ctypes.Structure):
+    _fields_ = [("size", wt.DWORD), ("usage", wt.DWORD), ("pid", wt.DWORD), ("heap", ctypes.c_size_t),
+                ("module", wt.DWORD), ("threads", wt.DWORD), ("parent", wt.DWORD), ("priority", wt.LONG),
+                ("flags", wt.DWORD), ("exe", wt.WCHAR * 260)]
+
+
+kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+kernel32.OpenProcess.restype = wt.HANDLE
+
+
+def process_table():
+    """{pid: (parent pid, exe)} from one Toolhelp snapshot (milliseconds, unlike WMI)."""
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    table, entry = {}, ProcessEntry()
+    entry.size = ctypes.sizeof(ProcessEntry)
+    more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+    while more:
+        table[entry.pid] = (entry.parent, entry.exe)
+        more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    kernel32.CloseHandle(snapshot)
+    return table
+
+
+def start_time(pid):
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    times = (ctypes.c_ulonglong * 4)()
+    ok = kernel32.GetProcessTimes(handle, *(ctypes.byref(times, 8 * i) for i in range(4)))
+    kernel32.CloseHandle(handle)
+    return times[0] if ok else None
+
+
 def process_tree(root):
-    out = subprocess.run(["powershell", "-NoProfile", "-Command",
-                          "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId) $($_.Name)\" }"],
-                         capture_output=True, text=True).stdout
-    table = {}
-    for line in out.splitlines():
-        parts = line.split(" ", 2)
-        if len(parts) == 3:
-            table[int(parts[0])] = (int(parts[1]), parts[2])
+    table = process_table()
+    children = {}
+    for pid, (parent, _) in table.items():
+        children.setdefault(parent, []).append(pid)
     lines, pids = [], []
 
     def walk(pid, depth):
         pids.append(pid)
         lines.append("  " * depth + f"{table.get(pid, (0, '?'))[1]} {pid}")
-        for child, (parent, _) in sorted(table.items()):
-            if parent == pid and child != pid:
+        born = start_time(pid)
+        for child in sorted(children.get(pid, [])):
+            # A stale parent pid can point at a newer process: only real children.
+            child_born = start_time(child)
+            if child != pid and born is not None and child_born is not None and child_born >= born:
                 walk(child, depth + 1)
 
     walk(root, 0)

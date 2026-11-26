@@ -7,6 +7,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - automation does not take the focus, and no console window pops up
   - the project is saved without Windows' `\\\\?\\` prefix
   - closing a session, and quitting the app, leave no pi process behind
+  - the caption buttons (minimize, maximize, close) and a caption double click work
 
     python -I script/windows-smoke.py [path\\to\\pi-gpui.exe]
 
@@ -117,6 +118,110 @@ def foreground_pid():
     owner = wt.DWORD()
     user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(owner))
     return owner.value
+
+
+def app_window(pid):
+    """HWND of the app's main window (class Zed::Window), or None."""
+    found = []
+
+    def visit(hwnd, _):
+        owner = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, cls, 64)
+        if owner.value == pid and cls.value == "Zed::Window" and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(visit), 0)
+    return found[0] if found else None
+
+
+HIT = {1: "client", 2: "caption", 8: "minimize", 9: "maximize", 20: "close"}
+user32.SendMessageW.restype = ctypes.c_ssize_t
+user32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+
+
+def client_width(hwnd):
+    rect = wt.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    return rect.right
+
+
+def screen_position(hwnd, x, y):
+    point = wt.POINT(x, y)
+    user32.ClientToScreen(hwnd, ctypes.byref(point))
+    return (point.y & 0xFFFF) << 16 | (point.x & 0xFFFF)
+
+
+def hit_test(hwnd, x, y=18):
+    """What Windows would make of the point (x, y) of the client area."""
+    # gpui follows the pointer itself: move it there first, as real input does
+    user32.PostMessageW(hwnd, 0x0200, 0, (y << 16) | x)  # WM_MOUSEMOVE
+    time.sleep(0.2)
+    return user32.SendMessageW(hwnd, 0x0084, 0, screen_position(hwnd, x, y))  # WM_NCHITTEST
+
+
+def caption_click(hwnd, x, y=18, double=False):
+    """The messages a real left click (or double click) on the title bar sends."""
+    hit = hit_test(hwnd, x, y)
+    where = screen_position(hwnd, x, y)
+    messages = [0x00A0, 0x00A1, 0x00A2]  # WM_NCMOUSEMOVE, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP
+    if double:
+        messages += [0x00A3, 0x00A2]  # WM_NCLBUTTONDBLCLK, WM_NCLBUTTONUP
+    for message in messages:
+        user32.PostMessageW(hwnd, message, hit, where)
+        time.sleep(0.05)
+    time.sleep(0.7)
+    return hit
+
+
+def window_controls_check(sandbox):
+    """A second launch, without a project: the caption buttons."""
+    home, auto = os.path.join(sandbox, "home2"), os.path.join(sandbox, "auto2")
+    os.makedirs(home)
+    os.makedirs(auto)
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env.pop("PI_EXECUTABLE", None)
+    app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        hwnd = wait_for(lambda: app_window(app.pid), 20)
+        check("controls: the window opens without a project", bool(hwnd))
+        if not hwnd:
+            return
+        time.sleep(1.0)
+        width = client_width(hwnd)
+        # Walk the title bar from the right: close, maximize, minimize, then free caption space.
+        seen = []
+        for x in range(width - 4, 0, -6):
+            area = HIT.get(hit_test(hwnd, x), "other")
+            if not seen or seen[-1] != area:
+                seen.append(area)
+        check("controls: title bar has close, maximize, minimize and caption regions in order",
+              [a for a in seen if a != "client"][:4] == ["close", "maximize", "minimize", "caption"], seen)
+
+        zoomed = lambda: bool(user32.IsZoomed(hwnd))
+        # The buttons sit 125, 79 and 33 points from the right edge (46 wide each);
+        # the width changes when the window is maximized, so ask again each time.
+        check("controls: maximize button maximizes",
+              caption_click(hwnd, client_width(hwnd) - 79) == 9 and zoomed())
+        check("controls: the same button restores",
+              caption_click(hwnd, client_width(hwnd) - 79) == 9 and not zoomed())
+        caption_click(hwnd, 600, double=True)
+        check("controls: double click on the caption maximizes", zoomed())
+        caption_click(hwnd, 600, double=True)
+        check("controls: double click again restores", not zoomed())
+        check("controls: minimize button minimizes",
+              caption_click(hwnd, client_width(hwnd) - 125) == 8 and bool(user32.IsIconic(hwnd)))
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        time.sleep(0.5)
+        check("controls: close button closes the app",
+              caption_click(hwnd, client_width(hwnd) - 33) == 20
+              and bool(wait_for(lambda: app.poll() is not None, 10)))
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
 
 
 # ---------------------------------------------------------------------- PNG
@@ -321,6 +426,7 @@ def main():
         check("quitting leaves no pi process behind",
               wait_for(lambda: not any(alive(pid) for pid in every_pi), 15),
               [pid for pid in every_pi if alive(pid)])
+        window_controls_check(sandbox)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)

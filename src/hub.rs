@@ -4533,11 +4533,16 @@ impl HubView {
             })
             .border_b_1()
             .border_color(colors.border_variant)
-            .window_control_area(WindowControlArea::Drag)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                cx.listener(|this, event: &MouseDownEvent, window, _| {
                     this.title_bar_drag_pending = event.click_count == 1;
+                    // Windows reports a caption's clicks as non-client events,
+                    // and gpui gives those up events a click count of 1: only
+                    // the down carries the real count.
+                    if cfg!(windows) && event.click_count == 2 {
+                        platform::toggle_zoom(window);
+                    }
                 }),
             )
             .on_mouse_up(
@@ -4550,17 +4555,18 @@ impl HubView {
                 }
             }))
             // Double-click follows the user's macOS setting (zoom or minimize);
-            // on Linux it maximizes, and a right click opens the window menu.
+            // elsewhere it maximizes. A right click opens the window menu on
+            // Linux (Windows shows its own system menu for the caption).
             .on_click(|event, window, _| {
-                if event.click_count() >= 2 {
+                if event.click_count() >= 2 && !cfg!(windows) {
                     if cfg!(target_os = "macos") {
                         window.titlebar_double_click();
                     } else {
-                        window.zoom_window();
+                        platform::toggle_zoom(window);
                     }
                 }
             })
-            .when(!cfg!(target_os = "macos"), |this| {
+            .when(!cfg!(target_os = "macos") && !cfg!(windows), |this| {
                 this.on_mouse_down(MouseButton::Right, |event, window, _| {
                     window.show_window_menu(event.position)
                 })
@@ -4582,7 +4588,17 @@ impl HubView {
                     .pr(px(10.))
                     .gap(px(12.))
                     .children(self.render_dock_toggle(DockSide::Left, cx))
-                    .child(div().flex_1().min_w(px(0.)).flex().child(breadcrumb))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            // Windows: the free space is the caption; the
+                            // buttons around it keep their clicks and the
+                            // caption buttons keep their own areas.
+                            .window_control_area(WindowControlArea::Drag)
+                            .child(breadcrumb),
+                    )
                     .children(plugin_statuses)
                     .children(status)
                     .children(self.render_update_chip(cx))
@@ -4645,7 +4661,7 @@ impl HubView {
                                 })),
                         )
                     })
-                    .children(render_window_controls(window)),
+                    .children(render_window_controls(window, cx)),
             )
     }
 
@@ -4879,7 +4895,7 @@ impl Render for HubView {
                 }),
             )
             .on_action(|_: &Minimize, window, _| window.minimize_window())
-            .on_action(|_: &Zoom, window, _| window.zoom_window())
+            .on_action(|_: &Zoom, window, _| platform::toggle_zoom(window))
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 // ⌘ on macOS, Ctrl elsewhere, and nothing else held.
@@ -4943,7 +4959,78 @@ impl Render for HubView {
 
 /// Minimize, maximize and close, when the app draws its own frame (Linux
 /// without server-side decorations). The window manager draws them otherwise.
-fn render_window_controls(window: &Window) -> Option<AnyElement> {
+/// Windows draws no frame for us: these are the caption buttons. Each is a
+/// window control area, so the system hit-tests them as `HTMINBUTTON`,
+/// `HTMAXBUTTON` and `HTCLOSE` (snap layouts, hover) and the click reaches us
+/// as an ordinary mouse event.
+///
+/// The action is ours, not gpui's: gpui 0.2.2 only minimizes, maximizes or
+/// closes on its own when the app left the mouse down unhandled, and a
+/// focusable view (our root) always marks it handled.
+fn caption_buttons(window: &Window, cx: &App) -> AnyElement {
+    let colors = cx.theme().colors.clone();
+    let maximized = window.is_maximized();
+    let button = |id: &'static str,
+                  area: WindowControlArea,
+                  icon: IconName,
+                  close: bool,
+                  act: fn(&mut Window)| {
+        let hover = if close {
+            gpui::rgb(0xc42b1c).into()
+        } else {
+            colors.ghost_element_hover
+        };
+        div()
+            .id(id)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(CAPTION_BUTTON_WIDTH))
+            .h_full()
+            .window_control_area(area)
+            .hover(move |style| style.bg(hover))
+            .on_click(move |_, window, _| act(window))
+            .child(Icon::new(icon).size(IconSize::Small).color(Color::Muted))
+    };
+    h_flex()
+        .flex_none()
+        .h_full()
+        .child(button(
+            "caption-minimize",
+            WindowControlArea::Min,
+            IconName::Dash,
+            false,
+            |window| window.minimize_window(),
+        ))
+        .child(button(
+            "caption-maximize",
+            WindowControlArea::Max,
+            if maximized {
+                IconName::Restore
+            } else {
+                IconName::Maximize
+            },
+            false,
+            |window| platform::toggle_zoom(window),
+        ))
+        .child(button(
+            "caption-close",
+            WindowControlArea::Close,
+            IconName::Close,
+            true,
+            |window| window.remove_window(),
+        ))
+        .into_any_element()
+}
+
+/// Width of a Windows caption button.
+const CAPTION_BUTTON_WIDTH: f32 = 46.;
+
+fn render_window_controls(window: &Window, cx: &App) -> Option<AnyElement> {
+    if cfg!(windows) {
+        return Some(caption_buttons(window, cx));
+    }
     if !matches!(
         window.window_decorations(),
         gpui::Decorations::Client { .. }
@@ -4979,7 +5066,7 @@ fn render_window_controls(window: &Window) -> Option<AnyElement> {
                     } else {
                         "Maximize"
                     }))
-                    .on_click(|_, window, _| window.zoom_window()),
+                    .on_click(|_, window, _| platform::toggle_zoom(window)),
                 )
             })
             .child(

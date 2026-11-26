@@ -44,6 +44,41 @@ pub fn start_window_drag(window: &Window) {
     }
 }
 
+/// Maximizes the window, or restores it when it is already maximized. gpui's
+/// `zoom` only ever maximizes on Windows, so ask the window itself there.
+pub fn toggle_zoom(window: &Window) {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn IsZoomed(hwnd: isize) -> i32;
+            fn PostMessageW(hwnd: isize, message: u32, wparam: usize, lparam: isize) -> i32;
+        }
+        const WM_SYSCOMMAND: u32 = 0x0112;
+        const SC_MAXIMIZE: usize = 0xF030;
+        const SC_RESTORE: usize = 0xF120;
+
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            let hwnd = win32.hwnd.get();
+            // SAFETY: queries and posts to gpui's live HWND.
+            unsafe {
+                let command = if IsZoomed(hwnd) != 0 {
+                    SC_RESTORE
+                } else {
+                    SC_MAXIMIZE
+                };
+                PostMessageW(hwnd, WM_SYSCOMMAND, command, 0);
+            }
+            return;
+        }
+    }
+    window.zoom_window();
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn start_window_drag(window: &Window) {
     window.start_window_move();

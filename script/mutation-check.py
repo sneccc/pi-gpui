@@ -115,6 +115,24 @@ E2E_MUTATIONS = [
         "    Ok(canonical)",
     ),
     (
+        "caption buttons do nothing when clicked",
+        "src/hub.rs",
+        "            .on_click(move |_, window, _| act(window))\n",
+        "",
+    ),
+    (
+        "maximize never restores",
+        "src/platform.rs",
+        "let command = if IsZoomed(hwnd) != 0 {",
+        "let command = if false {",
+    ),
+    (
+        "the whole title bar is one caption area again (shadows the buttons)",
+        "src/hub.rs",
+        "            .border_color(colors.border_variant)\n            .on_mouse_down(",
+        "            .border_color(colors.border_variant)\n            .window_control_area(WindowControlArea::Drag)\n            .on_mouse_down(",
+    ),
+    (
         "closing a session leaves it (and its pi) running",
         "src/hub.rs",
         "        let position = entry.chats.iter().position(|chat| &chat.view == view);\n        entry.chats.retain(|chat| &chat.view != view);\n        let workspace = entry.path.clone();",

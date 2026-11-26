@@ -29,6 +29,7 @@ mod single_instance;
 mod text_input;
 mod ui;
 mod updater;
+mod url_scheme;
 mod window_frame;
 
 use std::path::PathBuf;
@@ -52,8 +53,17 @@ fn main() {
     #[cfg(target_os = "macos")]
     migrate_data_directory();
     if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        platform::attach_parent_console();
         println!("pi-gpui {}", env!("CARGO_PKG_VERSION"));
         return;
+    }
+    // Windows: --register-url-scheme / --unregister-url-scheme (installer).
+    if let Some(code) = std::env::args()
+        .nth(1)
+        .as_deref()
+        .and_then(url_scheme::run_cli)
+    {
+        std::process::exit(code);
     }
     // Windows: pi and the other children die with the app, even a crashed one.
     process::contain_children();

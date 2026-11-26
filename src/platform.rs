@@ -44,6 +44,25 @@ pub fn start_window_drag(window: &Window) {
     }
 }
 
+/// Windows release builds are GUI programs without a console, so command-line
+/// flags (`--version`, `--register-url-scheme`) print nowhere. Borrow the
+/// console of the terminal that started us, if there is one; output that is
+/// already redirected stays redirected.
+pub fn attach_parent_console() {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn AttachConsole(process: u32) -> i32;
+        }
+        const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+        // SAFETY: no arguments to get wrong; failing (no parent console) is fine.
+        unsafe {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
 /// The hidden desktop `PI_GPUI_HEADLESS=1` puts the window on.
 #[cfg(windows)]
 pub const HEADLESS_DESKTOP: &str = "pi-gpui-headless";

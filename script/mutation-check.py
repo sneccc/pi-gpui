@@ -120,6 +120,13 @@ MUTATIONS += [
 
 E2E_MUTATIONS = [
     (
+        "the project's reload button does not look for new sessions",
+        "src/hub.rs",
+        "            self.save(cx);\n        }\n        self.load_sessions(workspace, cx);\n        cx.notify();",
+        "            self.save(cx);\n        }\n        cx.notify();",
+        "refresh",  # optional: the windows-smoke.py --only check that covers it
+    ),
+    (
         "child processes get a console window",
         "src/process.rs",
         "const CREATE_NO_WINDOW: u32 = 0x0800_0000;",
@@ -148,6 +155,7 @@ E2E_MUTATIONS = [
         "src/single_instance.rs",
         "Ok(mut pipe) => return pipe.write_all(line.as_bytes()).is_ok(),",
         "Ok(_) => return false,",
+        "handover",
     ),
     (
         "caption buttons do nothing when clicked",
@@ -237,7 +245,23 @@ def write(path, text):
         file.write(text)
 
 
-def tests_pass(e2e=False, node=False):
+def move_running_exe_aside():
+    """cargo cannot replace a running exe, but Windows lets it be renamed: so a
+    Pi GPUI the user has open keeps running (nothing is killed)."""
+    exe = os.path.join(ROOT, "target", "release", "pi-gpui.exe")
+    if not os.path.exists(exe):
+        return
+    try:
+        os.rename(exe, exe + ".probe")
+        os.rename(exe + ".probe", exe)
+    except OSError:
+        n = 1
+        while os.path.exists(f"{exe}.running-old{n}"):
+            n += 1
+        os.rename(exe, f"{exe}.running-old{n}")
+
+
+def tests_pass(e2e=False, node=False, smoke_only=None):
     if node:
         command = ["node", "--no-warnings", "--test", *NODE_TESTS]
         try:
@@ -246,13 +270,15 @@ def tests_pass(e2e=False, node=False):
             return False, "timed out"
         return result.returncode == 0, result.stdout + result.stderr
     if e2e:
+        move_running_exe_aside()
         built = subprocess.run(
             ["cargo", "build", "--release"], cwd=ROOT, capture_output=True, text=True
         )
         if built.returncode != 0:
             return False, "could not compile " + built.stdout + built.stderr
-        subprocess.run(["taskkill", "/F", "/IM", "pi-gpui.exe"], capture_output=True)
         command = [sys.executable, "-I", os.path.join(ROOT, "script", "windows-smoke.py")]
+        if smoke_only:
+            command += ["--only", smoke_only]
     else:
         command = ["cargo", "test", "--release"]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
@@ -268,7 +294,7 @@ def main():
         wanted = sys.argv[sys.argv.index("--only") + 1].lower()
         mutations = [m for m in mutations if wanted in m[0].lower()]
     survived = []
-    for name, file, original, mutated in mutations:
+    for name, file, original, mutated, *smoke_only in mutations:
         path = os.path.join(ROOT, file)
         text = read(path)
         crlf = "\r\n" in text
@@ -280,11 +306,12 @@ def main():
         replacement = mutated.replace("\n", "\r\n") if crlf else mutated
         write(path, text.replace(needle, replacement))
         try:
-            passed, output = tests_pass(e2e, node)
+            passed, output = tests_pass(e2e, node, smoke_only[0] if smoke_only else None)
         finally:
             write(path, text)
             if e2e:
                 # leave the real binary built from the unmutated source
+                move_running_exe_aside()
                 subprocess.run(["cargo", "build", "--release"], cwd=ROOT, capture_output=True)
         compiled = "could not compile" not in output
         if passed:

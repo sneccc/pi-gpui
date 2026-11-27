@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--only controls,crash,handover,lease] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--only controls,crash,handover,lease,refresh] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -426,6 +426,63 @@ def lease_check(sandbox):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
 
 
+def write_pi_session(agent_dir, project, text):
+    """Writes a session the way pi does (compact JSON lines: the app's quick
+    scan looks for `"role":"user"`) into `agent_dir`'s session folder."""
+    encoded = "--" + project.lstrip("/" + chr(92)).replace("/", "-").replace(chr(92), "-").replace(":", "-") + "--"
+    folder = os.path.join(agent_dir, "sessions", encoded)
+    os.makedirs(folder, exist_ok=True)
+    compact = dict(separators=(",", ":"))
+    path = os.path.join(folder, time.strftime("%Y-%m-%dT%H-%M-%S-000Z") + "_smoke.jsonl")
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(json.dumps({"type": "session", "version": 3, "id": "smoke", "cwd": project,
+                               "timestamp": "2026-11-27T00:00:00.000Z"}, **compact) + "\n")
+        file.write(json.dumps({"type": "message", "id": "m1", "parentId": None, "timestamp": "2026-11-27T00:00:01.000Z",
+                               "message": {"role": "user", "content": text}}, **compact) + "\n")
+    return path
+
+
+def refresh_check(sandbox):
+    """A sixth launch: a session a terminal pi made while the app runs shows up
+    after the project's reload button is clicked."""
+    home, auto, agent = (os.path.join(sandbox, name) for name in ("home6", "auto6", "agent6"))
+    project = os.path.join(sandbox, "refresh project")
+    for folder in (home, auto, agent, project):
+        os.makedirs(folder)
+    # PI_CODING_AGENT_DIR: the app and its pi read sessions from the sandbox.
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent)
+    env.pop("PI_EXECUTABLE", None)
+    app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    driver = Automation(auto)
+
+    def sidebar(name):
+        """The project's rows in the sidebar, as pixels."""
+        path = os.path.join(sandbox, name + ".png")
+        driver.send("move 700 400", "wait 300", f"shot {path}")
+        if not os.path.isfile(path):
+            return None
+        _, _, bpp, rows = decode_png(path)
+        return [bytes(row[:260 * bpp]) for row in rows[70:240]]
+
+    try:
+        check("refresh: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        driver.send("wait 2500")
+        before = sidebar("refresh-before")
+        write_pi_session(agent, project, "made in a terminal pi")
+        # The project row is the first one under "Projects"; its reload button
+        # sits between "New session" and "Remove" and shows on hover.
+        answer = driver.send("move 150 92", "wait 300", "move 232 92", "wait 300", "click 232 92", "wait 1000")
+        check("refresh: clicking the project's reload button is ok",
+              answer is not None and all(line.endswith(": ok") for line in answer), answer)
+        after = sidebar("refresh-after")
+        check("refresh: the new session appears in the sidebar", before and after and before != after)
+        again = sidebar("refresh-again")
+        check("refresh: ... and the sidebar is still after that (the change was the new row)", after == again)
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+
+
 # ---------------------------------------------------------------------- PNG
 def decode_png(path):
     """(width, height, rows of RGB(A) bytes) of an 8-bit, non-interlaced PNG."""
@@ -516,7 +573,7 @@ def main():
     sandbox = tempfile.mkdtemp(prefix="pi-gpui-smoke-")
     if ONLY:
         checks = {"controls": window_controls_check, "crash": crash_check,
-                  "handover": handover_check, "lease": lease_check}
+                  "handover": handover_check, "lease": lease_check, "refresh": refresh_check}
         unknown = [name for name in ONLY if name not in checks]
         if unknown:
             sys.exit(f"unknown check(s) {unknown}; choose from {sorted(checks)}")
@@ -672,6 +729,7 @@ def main():
         crash_check(sandbox)
         handover_check(sandbox)
         lease_check(sandbox)
+        refresh_check(sandbox)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)

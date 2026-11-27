@@ -109,6 +109,30 @@ for (const [name, lease] of [
 	});
 }
 
+test("the app's pi takes a session over even when its lease names a live process", () => {
+	// The app checked the lease (with start times) before opening the session;
+	// the pid may already belong to an unrelated process.
+	const file = session();
+	foreignLease(file, "a terminal pi");
+	const held = bridge.holdSession(file, "Pi GPUI", { appPid: 1 }, true);
+	assert.equal(leaseOf(file).pid, process.pid);
+	assert.equal(leaseOf(file).surface, "Pi GPUI");
+	held.release();
+	assert.equal(existsSync(`${file}.lease`), false);
+});
+
+test("the bridge takes over its session when the app opens it", () => {
+	const handlers: Record<string, (event: any, ctx: any) => any> = {};
+	bridge.default({ on: (name: string, handler: any) => (handlers[name] = handler), registerCommand() {} });
+	const file = session();
+	foreignLease(file, "a terminal pi");
+	const ctx = { sessionManager: { getSessionFile: () => file }, ui: { setStatus() {} }, hasUI: true };
+	handlers.session_start({ reason: "startup" }, ctx);
+	assert.equal(leaseOf(file).surface, "Pi GPUI");
+	handlers.session_shutdown({ reason: "quit" }, ctx);
+	assert.equal(existsSync(`${file}.lease`), false);
+});
+
 test("a lease older than the TTL is taken over", () => {
 	const file = session();
 	foreignLease(file);

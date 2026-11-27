@@ -75,7 +75,8 @@ export default function (pi: any) {
 		publish(ctx);
 		lease?.release();
 		const session: string | undefined = ctx.sessionManager.getSessionFile?.();
-		lease = session ? holdSession(session, "Pi GPUI", { appPid }) : undefined;
+		// The app opened this session after checking its lease: take it over.
+		lease = session ? holdSession(session, "Pi GPUI", { appPid }, true) : undefined;
 	});
 	pi.on("session_shutdown", () => {
 		lease?.release();
@@ -195,14 +196,18 @@ function processAlive(pid: number): boolean {
  * Holds `session` for this process: writes the lease (once the session file
  * exists, and never over another live holder's lease), rewrites it every
  * minute and on `refresh()`, and removes it on `release()` or exit.
+ * `takeOver`: write even over a lease that looks live. For Pi GPUI's own pi:
+ * the app checked the lease before opening the session, with process start
+ * times, which node cannot read; a pid Windows already reused for another
+ * process would otherwise look like a live holder.
  */
-export function holdSession(session: string, surface: string, extra: Partial<Lease> = {}) {
+export function holdSession(session: string, surface: string, extra: Partial<Lease> = {}, takeOver = false) {
 	const path = `${session}.lease`;
 	const refresh = (): boolean => {
 		// Cheap when called often (every saved message): our own fresh lease stays.
 		const current = readLease(session);
 		if (current?.pid === process.pid && Date.now() - (current.updatedAt ?? 0) < LEASE_REFRESH_MS / 2) return true;
-		if (!fs.existsSync(session) || leaseHolder(session)) return false;
+		if (!fs.existsSync(session) || (!takeOver && leaseHolder(session))) return false;
 		const lease: Lease = {
 			pid: process.pid,
 			surface,

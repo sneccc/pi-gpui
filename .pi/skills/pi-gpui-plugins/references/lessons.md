@@ -6,6 +6,11 @@ entry "moved to <page>". Corrections of wrong advice are logged here too.
 
 ## Entries
 
+- **2026-11-27: a skill with ": " in an unquoted description is skipped
+  silently.** pi-gpui-dev did not load (no warning) until its description was
+  quoted. Verified: `pi --mode rpc --skill <dir>` + `get_commands` listed
+  `skill:pi-gpui-dev` only after quoting. Check a skill loads this way after
+  editing its frontmatter.
 - **2026-11-27: the template is checked automatically.** `windows-smoke.py
   --only template` copies `assets/template`, presses its shortcut, makes pi
   call its tool and answers the field. Verified: 6 checks pass in 6.6 s; with

@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -368,7 +368,7 @@ def crash_check(sandbox):
     project = os.path.join(sandbox, "crash project")
     for folder in (home, auto, project):
         os.makedirs(folder)
-    agent = slow_pi_agent(sandbox, "agent3")
+    agent = fake_pi_agent(sandbox, "agent3")
     env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
                PI_SLOW_MODEL_MS="60000")
     env.pop("PI_EXECUTABLE", None)
@@ -398,15 +398,94 @@ def crash_check(sandbox):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
 
 
-def slow_pi_agent(sandbox, name):
-    """A pi agent folder whose default model is the free slow fake model
-    (script/debug/slow-model.ts, delay from PI_SLOW_MODEL_MS)."""
+def fake_pi_agent(sandbox, name, model="slow-model.ts"):
+    """A pi agent folder whose default model is a free fake model from
+    script/debug: slow-model.ts (delay from PI_SLOW_MODEL_MS) or
+    scripted-model.ts (steps from PI_SCRIPTED_MODEL)."""
     agent = os.path.join(sandbox, name)
     os.makedirs(agent)
     with open(os.path.join(agent, "settings.json"), "w", encoding="utf-8") as file:
-        json.dump({"extensions": [os.path.join(ROOT, "script", "debug", "slow-model.ts")],
+        json.dump({"extensions": [os.path.join(ROOT, "script", "debug", model)],
                    "defaultProvider": "faux", "defaultModel": "faux-1", "defaultThinkingLevel": "off"}, file)
     return agent
+
+
+def ask_check(sandbox):
+    """The Ask example plugin, end to end: pi calls its tool, the plugin shows
+    a form in the chat, keys answer it, and pi gets the answers back."""
+    home, auto, project = (os.path.join(sandbox, name) for name in ("home9", "auto9", "ask project"))
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    shutil.copytree(os.path.join(ROOT, "examples", "plugins", "ask"),
+                    os.path.join(home, ".config", "pi-gpui", "plugins", "ask"))
+    agent = fake_pi_agent(sandbox, "agent9", "scripted-model.ts")
+    steps = os.path.join(sandbox, "ask-steps.json")
+    with open(steps, "w", encoding="utf-8") as file:
+        json.dump([{"tool": "ask_user_question", "args": {"questions": [
+            {"question": "Which colour?", "options": [{"label": "Red"}, {"label": "Blue"}]},
+            {"question": "Any comment?"}]}},
+            {"echo": "GOT: "}], file)
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent, PI_SCRIPTED_MODEL=steps)
+    env.pop("PI_EXECUTABLE", None)
+    log_path = os.path.join(sandbox, "ask-app.log")
+    log = open(log_path, "w")
+    app = subprocess.Popen([EXE, project], env=env, stdout=log, stderr=subprocess.STDOUT)
+    driver = Automation(auto)
+
+    def transcript():
+        return "".join(open(os.path.join(folder, name), encoding="utf-8").read()
+                       for folder, _, names in os.walk(os.path.join(agent, "sessions"))
+                       for name in names if name.endswith(".jsonl"))
+
+    try:
+        check("ask: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        check("ask: the plugin is loaded", bool(wait_for(
+            lambda: "loaded 1 plugin(s): ask" in open(log_path, errors="replace").read(), 15)))
+        driver.settle(sandbox)
+        baseline = chat_accent(driver, sandbox)
+        driver.send("type please ask me", "key enter")
+        check("ask: pi calls the plugin's tool", bool(wait_for(lambda: "ask_user_question" in transcript(), 15)))
+        check("ask: the plugin's form appears in the chat", wait_for_form(driver, sandbox, baseline))
+        # As a user would: 2 picks the second option, Enter goes on, a typed
+        # answer for the free question, Enter sends.
+        answer = driver.send("key 2", "wait 200", "key enter", "wait 300", "type looks good", "key enter")
+        check("ask: the keys reach the form", answer is not None and all(l.endswith(": ok") for l in answer), answer)
+        got = wait_for(lambda: "GOT: The user answered" in transcript(), 15)
+        text = transcript()
+        check("ask: pi gets the answers from the form",
+              bool(got) and "Blue" in text and "looks good" in text, text[-400:])
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+        log.close()
+
+
+def accent_pixels(path, left=300, top=80, right=1150, bottom=780):
+    """Orange (the theme's accent) pixels in the chat column: forms, chips and
+    focused fields use it, the plain transcript hardly at all."""
+    _, _, bpp, rows = decode_png(path)
+    count = 0
+    for row in rows[top:bottom]:
+        for x in range(left, min(right, len(row) // bpp)):
+            r, g, b = row[x * bpp], row[x * bpp + 1], row[x * bpp + 2]
+            if r > 90 and r > g > b and r - b > 40:  # warm: the accent and its dim borders
+                count += 1
+    return count
+
+
+def chat_accent(driver, folder):
+    """accent_pixels of the window right now."""
+    path = os.path.join(folder, f"accent-{id(driver)}-{threading.get_ident()}.png")
+    driver.send(f"shot {path}")
+    return accent_pixels(path) if os.path.isfile(path) else 0
+
+
+def wait_for_form(driver, folder, baseline, more=500, timeout=20):
+    """Waits until a plugin's form (or field) is drawn in the chat: it adds
+    accent-coloured borders and buttons, at least `more` pixels over
+    `baseline` (chat_accent before the prompt). A spinner keeps the window
+    changing, so `settle` cannot tell this."""
+    return bool(wait_for(lambda: chat_accent(driver, folder) >= baseline + more, timeout, 0.1))
 
 
 def chip_pixels(path):
@@ -977,7 +1056,7 @@ def main_check(sandbox):
 
 CHECKS = {"main": main_check, "controls": window_controls_check, "crash": crash_check,
           "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
-          "gpui": gpui_check, "held": held_check}
+          "gpui": gpui_check, "held": held_check, "ask": ask_check}
 
 
 def run_check(name, sandbox):

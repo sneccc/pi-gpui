@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit,images] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit,images,grill] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -708,6 +708,57 @@ def images_check(sandbox):
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
 
 
+def grill_check(sandbox):
+    """The Grill plugin: a grilling round as a form; accepting the
+    recommendation, picking another choice and answering in your own words
+    all reach the agent as decisions."""
+    home, auto, project = (os.path.join(sandbox, name) for name in ("home13", "auto13", "grill project"))
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    shutil.copytree(os.path.join(ROOT, "examples", "plugins", "grill"),
+                    os.path.join(home, ".config", "pi-gpui", "plugins", "grill"))
+    agent = fake_pi_agent(sandbox, "agent13", "scripted-model.ts")
+    steps = os.path.join(sandbox, "grill-steps.json")
+    json.dump([{"tool": "grill_round", "args": {"round": 1, "progress": "0 settled, 3 open", "questions": [
+        {"title": "Ship on Friday?", "recommended": "Yes, with billing behind a flag"},
+        {"title": "Which database?", "choices": ["SQLite", "PostgreSQL", "DuckDB"],
+         "recommended": "PostgreSQL", "recommendedChoice": 1},
+        {"title": "Who owns on-call?", "recommended": "The platform team"}]}},
+        {"echo": "GOT: "}], open(steps, "w"))
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
+               PI_SCRIPTED_MODEL=steps)
+    app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    driver = Automation(auto)
+
+    def transcript():
+        return "".join(open(os.path.join(folder, name), encoding="utf-8").read()
+                       for folder, _, names in os.walk(os.path.join(agent, "sessions"))
+                       for name in names if name.endswith(".jsonl"))
+
+    try:
+        check("grill: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        driver.settle(sandbox)
+        baseline = chat_accent(driver, sandbox)
+        driver.send("type grill me", "key enter")
+        check("grill: pi calls grill_round", bool(wait_for(lambda: "grill_round" in transcript(), 15)))
+        check("grill: the round appears as a form", wait_for_form(driver, sandbox, baseline))
+        # Q1: 1 = the recommendation. Q2: 3 = the third option (the recommended
+        # one comes first). Q3: Down to the text field, own words (a space
+        # there would pick the highlighted option, so move first).
+        driver.send("key 1", "key enter", "wait 300", "key 3", "key enter", "wait 300",
+                    "key down", "type Maya does", "key enter")
+        got = wait_for(lambda: "GOT: Round 1: the user answered." in transcript(), 15)
+        text = json.dumps(transcript())
+        check("grill: the agent learns the accepted recommendation",
+              bool(got) and "accepted your recommendation (Yes, with billing behind a flag)" in text, text[-500:])
+        check("grill: ... the other choice", "chose: DuckDB" in text)
+        check("grill: ... and the answer in the user's own words", "answered in their own words: Maya does" in text)
+        check("grill: only the fake model answered", only_fake_model(transcript()), models_used(transcript()))
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+
+
 def handover_check(sandbox):
     """A fourth launch, with a HOME of its own: later launches hand their
     folder or pi-gpui:// link to the running app and exit."""
@@ -1267,7 +1318,7 @@ CHECKS = {"main": main_check, "controls": window_controls_check, "crash": crash_
           "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
           "gpui": gpui_check, "held": held_check, "ask": ask_check,
           "template": template_check, "edit": edit_check,
-          "images": images_check}
+          "images": images_check, "grill": grill_check}
 
 
 def run_check(name, sandbox):

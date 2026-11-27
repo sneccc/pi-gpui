@@ -288,7 +288,22 @@ NODE_MUTATIONS += [
     ),
 ]
 
-NODE_TESTS = ["extensions/lease.test.ts", "packages/pi-gpui/index.test.ts"]
+NODE_MUTATIONS += [
+    (
+        "the grill form does not put the recommended choice first",
+        "examples/plugins/grill/format.mjs",
+        "...choices.filter((_, position) => position !== best).map((label) => ({ label })),",
+        "...choices.map((label) => ({ label })),",
+    ),
+    (
+        "the agent cannot tell an accepted recommendation from another choice",
+        "examples/plugins/grill/format.mjs",
+        "if (picked === 0) return",
+        "if (picked === -1) return",
+    ),
+]
+
+NODE_TESTS = ["extensions/lease.test.ts", "packages/pi-gpui/index.test.ts", "examples/plugins/grill/grill.test.ts"]
 
 
 def read(path):

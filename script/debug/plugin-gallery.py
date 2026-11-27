@@ -1,6 +1,6 @@
 """One PNG that shows what the example plugins do, from real headless runs.
 
-    python -I script/debug/plugin-gallery.py [out.png] [--only ask,secrets,doom] [--doom-python PATH]
+    python -I script/debug/plugin-gallery.py [out.png] [--only ask,secrets,grill,doom] [--doom-python PATH]
 
 Each plugin gets its own sandbox and app (headless, side by side). A scripted
 fake model (script/debug/scripted-model.ts) calls the plugin's tool, the
@@ -59,6 +59,21 @@ SCENARIOS = {
         "prompt": "deploy with my API key",
         "shots": [("Secrets: a masked field; the agent never sees the value", ["type sk-demo-1234567890"]),
                   ("Secrets: the agent only learns where it was saved", ["key enter", "wait 1500"])],
+    },
+    "grill": {
+        "steps": [{"tool": "grill_round", "args": {"round": 2, "progress": "3 settled, 3 open", "questions": [
+            {"title": "Ship the beta on Friday?",
+             "body": "The release train leaves Friday 5pm. QA signed off on the core flows; billing has two open bugs.",
+             "recommended": "Yes, ship Friday with billing behind a feature flag"},
+            {"title": "Which database for the reporting service?", "choices": ["SQLite", "PostgreSQL", "DuckDB"],
+             "recommended": "PostgreSQL: it already runs in production", "recommendedChoice": 1},
+            {"title": "Who owns on-call for launch week?", "recommended": "The platform team, as usual"}]}},
+            {"echo": ""}],
+        "prompt": "grill me on the launch plan",
+        "shots": [("Grill: a grilling round as a form, the recommendation first", []),
+                   ("Grill: the agent gets each decision back",
+                    ["key 1", "key enter", "wait 300", "key 3", "key enter", "wait 300", "key down",
+                     "type Maya, she wrote the billing code", "key enter", "wait 1500"])],
     },
     "doom": {
         "steps": [{"tool": "doom", "args": {}}, {"text": "Have fun!"}],

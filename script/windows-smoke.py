@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--only controls,crash,handover,lease,refresh] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--only controls,crash,handover,lease,refresh,gpui,held] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -483,6 +483,128 @@ def refresh_check(sandbox):
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
 
 
+def gpui_check(sandbox):
+    """A real terminal pi (its TUI in a hidden pseudo console) moves its
+    session into the running app with /gpui, typed while a run is going: the
+    run finishes and is saved first, then the app opens that session."""
+    sys.path.insert(0, os.path.join(ROOT, "script", "debug"))
+    from terminal import Terminal
+
+    home, auto, agent = (os.path.join(sandbox, name) for name in ("home7", "auto7", "agent7"))
+    project = os.path.join(sandbox, "gpui project")
+    for folder in (home, auto, agent, project):
+        os.makedirs(folder)
+    # One HOME for both, so the exe /gpui starts hands over to this app.
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
+               PI_GPUI_EXE=EXE, PI_SLOW_MODEL_MS="5000")
+    env.pop("PI_EXECUTABLE", None)
+    app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    command = ["cmd.exe", "/d", "/c", shutil.which("pi"), "--offline", "--no-skills", "--no-prompt-templates",
+               "--no-context-files", "-e", os.path.join(ROOT, "script", "debug", "slow-model.ts"),
+               "-e", os.path.join(ROOT, "packages", "pi-gpui", "index.ts"),
+               "--provider", "faux", "--model", "faux-1", "--thinking", "off"]
+    pis, term = {}, None
+
+    def session_file():
+        found = [os.path.join(folder, name) for folder, _, names in os.walk(os.path.join(agent, "sessions"))
+                 for name in names if name.endswith(".jsonl")]
+        return found[0] if len(found) == 1 else None
+
+    try:
+        check("gpui: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        term = Terminal(command, cwd=project, env=env)
+        check("gpui: the terminal pi starts with the pi-gpui package", term.wait_for("pi-gpui", 40) is not None,
+              term.output()[-500:])
+        term.type("hello")
+        time.sleep(0.3)
+        term.type("\r")
+        check("gpui: the prompt is running", term.wait_for("Working", 15) is not None)
+        mark = term.mark()
+        term.type("/gpui")
+        time.sleep(0.3)
+        term.type("\r")
+        check("gpui: /gpui says the app takes over when the run finishes",
+              term.wait_for("takes over this session when the current run finishes", 10, after=mark) is not None,
+              term.output()[mark:][-600:])
+        check("gpui: ... and pi keeps running the prompt meanwhile", term.exit_code() is None)
+        check("gpui: the terminal pi exits after the run", term.wait_exit(30) == 0, term.exit_code())
+        session = session_file()
+        saved = open(session, encoding="utf-8").read() if session else ""
+        check("gpui: the run's reply was saved before handing over", "SLOW_REPLY_DONE" in saved, session)
+
+        pis = wait_for(lambda: {p: e for p, e in descendants(app.pid).items() if e.lower() == "node.exe"}, 30) or {}
+        check("gpui: the running app opens the session (its pi starts)", bool(pis), descendants(app.pid))
+        lease_path = (session or "") + ".lease"
+        lease = wait_for(lambda: os.path.isfile(lease_path) and json.load(open(lease_path)), 20) or {}
+        check("gpui: ... that exact session, held by the app's pi",
+              lease.get("pid") in pis and lease.get("appPid") == app.pid, lease)
+        # The exe /gpui started must have handed over and exited: no Pi GPUI
+        # newer than our app may still run (an older one may be the user's).
+        app_started = start_time(app.pid) or 0
+        newer = lambda: [pid for pid, (_, exe) in process_table().items() if exe.lower() == "pi-gpui.exe"
+                         and pid != app.pid and (start_time(pid) or 0) > app_started]
+        check("gpui: no second app is left running (the launch handed over)",
+              wait_for(lambda: not newer(), 10), newer())
+    finally:
+        if term:
+            term.close()
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+        for pid in pis:
+            if alive(pid):
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+
+
+def held_check(sandbox):
+    """An eighth launch: while a real terminal pi has a session open, its row in
+    the sidebar is tinted red; once that pi quits, the tint goes away."""
+    sys.path.insert(0, os.path.join(ROOT, "script", "debug"))
+    from terminal import Terminal
+
+    home, auto, agent = (os.path.join(sandbox, name) for name in ("home8", "auto8", "agent8"))
+    project = os.path.join(sandbox, "held project")
+    for folder in (home, auto, agent, project):
+        os.makedirs(folder)
+    session = write_pi_session(agent, project, "held by a terminal pi")
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent)
+    env.pop("PI_EXECUTABLE", None)
+    # The project's own new session is the first row; the listed one the second.
+    app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    driver = Automation(auto)
+    term = None
+
+    def redness(name):
+        """How much redder than green the second session row is, on average."""
+        path = os.path.join(sandbox, name + ".png")
+        driver.send("move 700 400", "wait 200", f"shot {path}")
+        if not os.path.isfile(path):
+            return None
+        _, _, bpp, rows = decode_png(path)
+        pixels = [(row[x * bpp], row[x * bpp + 1]) for row in rows[141:157] for x in range(12, 250)]
+        return sum(r - g for r, g in pixels) / len(pixels)
+
+    try:
+        check("held: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        driver.send("wait 2500")
+        free = redness("held-free")
+        command = ["cmd.exe", "/d", "/c", shutil.which("pi"), "--offline", "--no-skills", "--no-prompt-templates",
+                   "--no-context-files", "-e", os.path.join(ROOT, "packages", "pi-gpui", "index.ts"),
+                   "--session", session]
+        term = Terminal(command, cwd=project, env=env)
+        check("held: a terminal pi opens the session", term.wait_for("pi-gpui", 40) is not None, term.output()[-400:])
+        tinted = wait_for(lambda: (redness("held-busy") or 0) > (free or 0) + 3 and redness("held-busy"), 10)
+        check("held: its row turns red in the app", bool(tinted), f"free {free}, now {redness('held-busy')}")
+        term.type("\x04")  # Ctrl+D: quit
+        check("held: the terminal pi quits", term.wait_exit(15) is not None, term.output()[-300:])
+        cleared = wait_for(lambda: abs((redness("held-after") or 99) - (free or 0)) < 1.5, 10)
+        check("held: the red goes away once it has quit", bool(cleared), f"free {free}, now {redness('held-after')}")
+    finally:
+        if term:
+            term.close()
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+
+
 # ---------------------------------------------------------------------- PNG
 def decode_png(path):
     """(width, height, rows of RGB(A) bytes) of an 8-bit, non-interlaced PNG."""
@@ -573,7 +695,8 @@ def main():
     sandbox = tempfile.mkdtemp(prefix="pi-gpui-smoke-")
     if ONLY:
         checks = {"controls": window_controls_check, "crash": crash_check,
-                  "handover": handover_check, "lease": lease_check, "refresh": refresh_check}
+                  "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
+                  "gpui": gpui_check, "held": held_check}
         unknown = [name for name in ONLY if name not in checks]
         if unknown:
             sys.exit(f"unknown check(s) {unknown}; choose from {sorted(checks)}")
@@ -730,6 +853,8 @@ def main():
         handover_check(sandbox)
         lease_check(sandbox)
         refresh_check(sandbox)
+        gpui_check(sandbox)
+        held_check(sandbox)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)

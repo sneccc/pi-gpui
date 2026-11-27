@@ -120,6 +120,13 @@ MUTATIONS += [
 
 E2E_MUTATIONS = [
     (
+        "a session a terminal pi holds looks like any other in the sidebar",
+        "src/hub.rs",
+        ".and_then(|file| self.held_sessions.get(file))",
+        ".and_then(|file| self.held_sessions.get(file).filter(|_| false))",
+        "held",
+    ),
+    (
         "the project's reload button does not look for new sessions",
         "src/hub.rs",
         "            self.save(cx);\n        }\n        self.load_sessions(workspace, cx);\n        cx.notify();",
@@ -232,6 +239,21 @@ NODE_MUTATIONS = [
     ),
 ]
 
+NODE_MUTATIONS += [
+    (
+        "a new session's lease waits for an event instead of the file",
+        "extensions/pi-gpui-bridge.ts",
+        "\t\tif (!fs.existsSync(session)) return;\n\t\tclearInterval(appear);\n\t\trefresh();",
+        "\t\treturn;",
+    ),
+    (
+        "/gpui says it continues now while a run is still going",
+        "packages/pi-gpui/index.ts",
+        "return ctx.isIdle && !ctx.isIdle()",
+        "return false",
+    ),
+]
+
 NODE_TESTS = ["extensions/lease.test.ts", "packages/pi-gpui/index.test.ts"]
 
 
@@ -249,16 +271,22 @@ def move_running_exe_aside():
     """cargo cannot replace a running exe, but Windows lets it be renamed: so a
     Pi GPUI the user has open keeps running (nothing is killed)."""
     exe = os.path.join(ROOT, "target", "release", "pi-gpui.exe")
+    folder = os.path.dirname(exe)
+    # Old copies that are no longer running can go (a running one refuses).
+    for name in os.listdir(folder) if os.path.isdir(folder) else []:
+        if name.startswith("pi-gpui.exe.running-old"):
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
     if not os.path.exists(exe):
         return
-    try:
-        os.rename(exe, exe + ".probe")
-        os.rename(exe + ".probe", exe)
-    except OSError:
-        n = 1
-        while os.path.exists(f"{exe}.running-old{n}"):
-            n += 1
-        os.rename(exe, f"{exe}.running-old{n}")
+    # A running exe can be renamed but not replaced, and renaming always works,
+    # so always move it aside: cargo then writes a fresh one.
+    n = 1
+    while os.path.exists(f"{exe}.running-old{n}"):
+        n += 1
+    os.rename(exe, f"{exe}.running-old{n}")
 
 
 def tests_pass(e2e=False, node=False, smoke_only=None):

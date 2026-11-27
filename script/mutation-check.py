@@ -3,6 +3,7 @@ and runs `cargo test`; a mutation the tests do not catch is reported.
 
     python -I script/mutation-check.py          # unit tests catch these
     python -I script/mutation-check.py --e2e    # windows-smoke.py catches these (headless)
+    python -I script/mutation-check.py --node   # node --test catches these (seconds)
     ... --only TEXT                             # only the mutations whose name contains TEXT
 
 Each source file is restored afterwards, even on Ctrl+C. Run it on a clean
@@ -102,6 +103,21 @@ MUTATIONS = [
 # Bugs only the end-to-end test can see: (name, file, original, mutated).
 # Not here: "automation takes the focus". Windows' foreground lock stops a
 # background-launched app from stealing it anyway, so that check is best effort.
+MUTATIONS += [
+    (
+        "the app refuses sessions its own pi holds",
+        "src/sessions.rs",
+        'if lease["appPid"].as_u64() == Some(own_pid) {',
+        'if lease["appPid"].as_u64() == Some(own_pid) && false {',
+    ),
+    (
+        "a reused pid keeps an old lease alive",
+        "src/sessions.rs",
+        "&& claimed.abs_diff(actual) > START_TOLERANCE_MS",
+        "&& claimed.abs_diff(actual) > u64::MAX - 1",
+    ),
+]
+
 E2E_MUTATIONS = [
     (
         "child processes get a console window",
@@ -160,6 +176,57 @@ E2E_MUTATIONS = [
 ]
 
 
+NODE_MUTATIONS = [
+    # (name, file, original, mutated): `node --test` must catch these. The lease
+    # code is in two files; the test also checks the copies are identical, so
+    # most mutations here change one copy and must still be caught.
+    (
+        "a pi takes over a session another live pi holds",
+        "packages/pi-gpui/index.ts",
+        "if (!fs.existsSync(session) || leaseHolder(session)) return false;",
+        "if (!fs.existsSync(session)) return false;",
+    ),
+    (
+        "releasing removes another process's lease",
+        "extensions/pi-gpui-bridge.ts",
+        "\t\tif (readLease(session)?.pid !== process.pid) return;\n",
+        "",
+    ),
+    (
+        "a dead process's lease still counts",
+        "packages/pi-gpui/index.ts",
+        "lease.pid === process.pid || !processAlive(lease.pid)",
+        "lease.pid === process.pid",
+    ),
+    (
+        "the package leases sessions inside Pi GPUI too",
+        "packages/pi-gpui/index.ts",
+        '\t\tif (ctx.mode === "rpc") return;\n\t\tconst session',
+        "\t\tconst session",
+    ),
+    (
+        "/resume into a session Pi GPUI holds is not stopped",
+        "packages/pi-gpui/index.ts",
+        "if (!open) return { cancel: true };",
+        "",
+    ),
+    (
+        "the terminal pi keeps its lease after quitting",
+        "packages/pi-gpui/index.ts",
+        '\tpi.on("session_shutdown", () => {\n\t\tlease?.release();',
+        '\tpi.on("session_shutdown", () => {',
+    ),
+    (
+        "/gpui opens the app while pi is still running",
+        "packages/pi-gpui/index.ts",
+        "if (!gone()) return setTimeout(poll, 100);",
+        "if (false) return setTimeout(poll, 100);",
+    ),
+]
+
+NODE_TESTS = ["extensions/lease.test.ts", "packages/pi-gpui/index.test.ts"]
+
+
 def read(path):
     with open(path, encoding="utf-8", newline="") as file:
         return file.read()
@@ -170,7 +237,14 @@ def write(path, text):
         file.write(text)
 
 
-def tests_pass(e2e=False):
+def tests_pass(e2e=False, node=False):
+    if node:
+        command = ["node", "--no-warnings", "--test", *NODE_TESTS]
+        try:
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            return False, "timed out"
+        return result.returncode == 0, result.stdout + result.stderr
     if e2e:
         built = subprocess.run(
             ["cargo", "build", "--release"], cwd=ROOT, capture_output=True, text=True
@@ -187,7 +261,8 @@ def tests_pass(e2e=False):
 
 def main():
     e2e = "--e2e" in sys.argv[1:]
-    mutations = E2E_MUTATIONS if e2e else MUTATIONS
+    node = "--node" in sys.argv[1:]
+    mutations = NODE_MUTATIONS if node else E2E_MUTATIONS if e2e else MUTATIONS
     if "--only" in sys.argv[1:]:
         # --only TEXT: just the mutations whose name contains TEXT
         wanted = sys.argv[sys.argv.index("--only") + 1].lower()
@@ -205,7 +280,7 @@ def main():
         replacement = mutated.replace("\n", "\r\n") if crlf else mutated
         write(path, text.replace(needle, replacement))
         try:
-            passed, output = tests_pass(e2e)
+            passed, output = tests_pass(e2e, node)
         finally:
             write(path, text)
             if e2e:

@@ -12,10 +12,11 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--only controls,crash,handover,lease] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
+--only runs just the named separate launches (seconds instead of minutes).
 
 Needs pi on PATH. Sends no prompt, so it costs no tokens. Exit code 0 = all
 checks passed. See docs/WINDOWS_UI_CHECKS.md.
@@ -33,7 +34,9 @@ import time
 import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ARGS = [arg for arg in sys.argv[1:] if arg != "--show"]
+ONLY = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv[1:] else None
+ARGS = [arg for index, arg in enumerate(sys.argv[1:], 1)
+        if arg not in ("--show", "--only") and sys.argv[index - 1] != "--only"]
 HEADLESS = "--show" not in sys.argv[1:]
 EXE = ARGS[0] if ARGS else os.path.join(ROOT, "target", "release", "pi-gpui.exe")
 
@@ -356,6 +359,73 @@ def handover_check(sandbox):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
 
 
+def node_lease(script, *args, wait=False):
+    """Runs `script` in node with the pi-gpui package's lease code imported as `m`."""
+    url = "file:///" + os.path.join(ROOT, "packages", "pi-gpui", "index.ts").replace(os.sep, "/")
+    code = f"import({json.dumps(url)}).then(async m => {{ const a = process.argv.slice(1); {script} }})"
+    command = ["node", "--no-warnings", "-e", code, *args]
+    if wait:
+        return subprocess.run(command, capture_output=True, text=True, timeout=30).stdout.strip()
+    return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def lease_check(sandbox):
+    """A fifth launch: a session held by a terminal pi is not opened twice,
+    and the app's own pi holds the session it opens."""
+    home, auto = os.path.join(sandbox, "home5"), os.path.join(sandbox, "auto5")
+    project = os.path.join(sandbox, "lease project")
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    session = os.path.join(project, "held session.jsonl")
+    with open(session, "w", encoding="utf-8") as file:
+        file.write(json.dumps({"type": "session", "version": 3, "id": "01a21a28-0000-7000-8000-000000000001",
+                               "timestamp": "2026-11-27T00:00:00.000Z", "cwd": project}) + "\n")
+    lease_path = session + ".lease"
+
+    def lease():
+        try:
+            return json.load(open(lease_path))
+        except (OSError, ValueError):
+            return None
+
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env.pop("PI_EXECUTABLE", None)
+    quote = lambda path: "".join(c if c.isalnum() or c in "-._~" else "%%%02X" % ord(c)
+                                 for c in path.replace(os.sep, "/"))
+    link = f"pi-gpui://open?workspace={quote(project)}&session={quote(session)}"
+    # The stand-in terminal pi: holds the session with the package's own code.
+    terminal = node_lease("m.holdSession(a[0], 'a terminal pi'); setInterval(() => {}, 1e6);", session)
+    app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pis = {}
+    try:
+        check("lease: the terminal pi's lease is written", bool(wait_for(
+            lambda: (lease() or {}).get("pid") == terminal.pid, 15)), lease())
+        check("lease: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        subprocess.run([EXE, link], env=env, capture_output=True, timeout=30)
+        time.sleep(4)
+        started = [p for p, exe in descendants(app.pid).items() if exe.lower() == "node.exe"]
+        check("lease: a session a terminal pi holds is not opened", not started, started)
+
+        terminal.terminate()
+        terminal.wait(10)
+        subprocess.run([EXE, link], env=env, capture_output=True, timeout=30)
+        pis = wait_for(lambda: {p: e for p, e in descendants(app.pid).items() if e.lower() == "node.exe"}, 25) or {}
+        check("lease: once the terminal pi is gone, the session opens", bool(pis), descendants(app.pid))
+        held = wait_for(lambda: (lease() or {}).get("pid") in pis and lease(), 25) or lease()
+        check("lease: the app's pi holds the session now", bool(held) and held.get("pid") in pis, held)
+        check("lease: ... marked as Pi GPUI with the app's pid",
+              bool(held) and held.get("surface") == "Pi GPUI" and held.get("appPid") == app.pid, held)
+        holder = node_lease("console.log(m.leaseHolder(a[0]) ?? 'nobody');", session, wait=True)
+        check("lease: a terminal pi sees that Pi GPUI holds it", holder == "Pi GPUI", holder)
+    finally:
+        for process in (terminal, app):
+            if process.poll() is None:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+        for pid in pis:
+            if alive(pid):
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+
+
 # ---------------------------------------------------------------------- PNG
 def decode_png(path):
     """(width, height, rows of RGB(A) bytes) of an 8-bit, non-interlaced PNG."""
@@ -444,6 +514,18 @@ def main():
         os.environ.pop("PI_GPUI_HEADLESS", None)
 
     sandbox = tempfile.mkdtemp(prefix="pi-gpui-smoke-")
+    if ONLY:
+        checks = {"controls": window_controls_check, "crash": crash_check,
+                  "handover": handover_check, "lease": lease_check}
+        unknown = [name for name in ONLY if name not in checks]
+        if unknown:
+            sys.exit(f"unknown check(s) {unknown}; choose from {sorted(checks)}")
+        try:
+            for name in ONLY:
+                checks[name](sandbox)
+        finally:
+            shutil.rmtree(sandbox, ignore_errors=True)
+        return report()
     home, auto, project = (os.path.join(sandbox, name) for name in ("home", "auto", "my project"))
     for folder in (home, auto, project):
         os.makedirs(folder)
@@ -589,6 +671,7 @@ def main():
         window_controls_check(sandbox)
         crash_check(sandbox)
         handover_check(sandbox)
+        lease_check(sandbox)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
@@ -598,6 +681,10 @@ def main():
         log.close()
         shutil.rmtree(sandbox, ignore_errors=True)
 
+    report()
+
+
+def report():
     print()
     if failures:
         print(f"{len(failures)} check(s) failed:")

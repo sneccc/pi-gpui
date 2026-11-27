@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -584,6 +584,80 @@ def template_check(sandbox):
         log.close()
 
 
+def edit_check(sandbox):
+    """Up in the empty message box brings back sent messages; the pencil on a
+    message edits it in the same session as a new branch."""
+    home, auto, project = (os.path.join(sandbox, name) for name in ("home11", "auto11", "edit project"))
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    agent = fake_pi_agent(sandbox, "agent11", "scripted-model.ts")
+    steps = os.path.join(sandbox, "edit-steps.json")
+    json.dump([{"text": "OK"}], open(steps, "w"))
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
+               PI_SCRIPTED_MODEL=steps)
+    app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    driver = Automation(auto)
+
+    def entries():
+        """[(id, parent, role, text)] of the session's messages."""
+        found = []
+        for folder, _, names in os.walk(os.path.join(agent, "sessions")):
+            for name in names:
+                if not name.endswith(".jsonl"):
+                    continue
+                for line in open(os.path.join(folder, name), encoding="utf-8"):
+                    entry = json.loads(line)
+                    message = entry.get("message") or {}
+                    if entry.get("type") == "message" and message.get("role") in ("user", "assistant"):
+                        content = message["content"]
+                        text = content if isinstance(content, str) else "".join(
+                            part.get("text", "") for part in content if part.get("type") == "text")
+                        found.append((entry["id"], entry.get("parentId"), message["role"], text))
+        return found
+
+    def users():
+        return [entry for entry in entries() if entry[2] == "user"]
+
+    def answered(count):
+        return wait_for(lambda: sum(entry[2] == "assistant" for entry in entries()) >= count, 15, 0.1)
+
+    try:
+        check("edit: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        driver.settle(sandbox)
+        driver.send("type first message", "key enter")
+        answered(1)
+        driver.send("type second message", "key enter")
+        answered(2)
+        # Up twice in the empty box: the first message again; Enter sends it.
+        driver.send("key up", "key up", "key enter")
+        check("edit: Up in the empty box brings back earlier messages",
+              bool(answered(3)) and [entry[3] for entry in users()][-1:] == ["first message"],
+              [entry[3] for entry in users()])
+        driver.send("type draft", "key up", "key ctrl-a", "key backspace")
+        check("edit: Up in typed text does not replace it", len(users()) == 3)
+
+        # The pencil sits in the left gutter of a user message; with three
+        # turns the second message's row is at y 538 (rows are bottom-aligned).
+        before = {entry[0] for entry in users()}
+        original = next(entry for entry in users() if entry[3] == "second message")
+        driver.settle(sandbox, quiet=0.5)
+        driver.send("move 500 538", "wait 300", "move 298 546", "wait 200", "click 298 546", "wait 1500")
+        driver.send("key ctrl-a", "type edited message", "key enter")
+        answered(4)
+        edited = [entry for entry in users() if entry[0] not in before]
+        check("edit: the pencil puts the message back and sending makes a new message",
+              [entry[3] for entry in edited] == ["edited message"], [entry[3] for entry in users()])
+        check("edit: ... branching where the original was (same parent, same session)",
+              bool(edited) and edited[0][1] == original[1], (edited, original))
+        check("edit: the original branch is kept", original[0] in {entry[0] for entry in users()})
+        files = [name for _, _, names in os.walk(os.path.join(agent, "sessions")) for name in names
+                 if name.endswith(".jsonl")]
+        check("edit: still one session (an edit is not a fork)", len(files) == 1, files)
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+
+
 def handover_check(sandbox):
     """A fourth launch, with a HOME of its own: later launches hand their
     folder or pi-gpui:// link to the running app and exit."""
@@ -1142,7 +1216,7 @@ def main_check(sandbox):
 CHECKS = {"main": main_check, "controls": window_controls_check, "crash": crash_check,
           "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
           "gpui": gpui_check, "held": held_check, "ask": ask_check,
-          "template": template_check}
+          "template": template_check, "edit": edit_check}
 
 
 def run_check(name, sandbox):

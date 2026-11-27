@@ -121,6 +121,20 @@ MUTATIONS += [
 
 E2E_MUTATIONS = [
     (
+        "Up in the empty message box does nothing",
+        "src/text_input.rs",
+        "        if self.recall_older(cx) {\n            return;\n        }",
+        "",
+        "edit",
+    ),
+    (
+        "the pencil forks a new session instead of editing in place",
+        "src/chat.rs",
+        "        self.resolve_row(row, true, cx);",
+        "        self.resolve_row(row, false, cx);",
+        "edit",
+    ),
+    (
         "a session a terminal pi holds looks like any other in the sidebar",
         "src/hub.rs",
         ".and_then(|file| self.held_sessions.get(file))",

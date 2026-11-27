@@ -119,7 +119,30 @@ MUTATIONS += [
     ),
 ]
 
+MUTATIONS += [
+    (
+        "expanded forms keep the highlight inside one question",
+        "src/chat/plugin_form.rs",
+        "    if !expanded {\n        return (step, target.rem_euclid(count as isize) as usize);\n    }",
+        "    if true {\n        return (step, target.rem_euclid(count as isize) as usize);\n    }",
+    ),
+]
+
 E2E_MUTATIONS = [
+    (
+        "options a plugin marks selected are not picked when the form opens",
+        "src/chat/plugin_form.rs",
+        "            .map(|question| question.preselected.clone())",
+        "            .map(|_| Vec::new())",
+        "grill",
+    ),
+    (
+        "Right does not move to the next question",
+        "src/chat/plugin_form.rs",
+        "            \"right\" => self.form_go(id, 1, window, cx),",
+        "            \"right\" => {}",
+        "grill",
+    ),
     (
         "pictures a tool returns show only after opening the row",
         "src/chat.rs",

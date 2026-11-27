@@ -98,6 +98,14 @@ def offline_environ():
     return {name: value for name, value in os.environ.items() if not CREDENTIAL.search(name)}
 
 
+def sandbox_env(home, auto):
+    """The environment for an app under test: its own HOME and automation
+    folder, no credentials, and an empty pi agent folder, so its pi loads none
+    of the user's extensions or settings (and writes nothing into theirs)."""
+    return dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto,
+                PI_CODING_AGENT_DIR=os.path.join(home, "pi-agent"))
+
+
 def wait_for(predicate, seconds, interval=0.2):
     end = time.time() + seconds
     while time.time() < end:
@@ -327,7 +335,7 @@ def window_controls_check(sandbox):
     home, auto = os.path.join(sandbox, "home2"), os.path.join(sandbox, "auto2")
     os.makedirs(home)
     os.makedirs(auto)
-    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = sandbox_env(home, auto)
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -742,10 +750,11 @@ def grill_check(sandbox):
         driver.send("type grill me", "key enter")
         check("grill: pi calls grill_round", bool(wait_for(lambda: "grill_round" in transcript(), 15)))
         check("grill: the round appears as a form", wait_for_form(driver, sandbox, baseline))
-        # Q1: 1 = the recommendation. Q2: 3 = the third option (the recommended
-        # one comes first). Q3: Down to the text field, own words (a space
-        # there would pick the highlighted option, so move first).
-        driver.send("key 1", "key enter", "wait 300", "key 3", "key enter", "wait 300",
+        # Q1 is left alone: its recommendation is picked from the start. Right
+        # goes to Q2 without answering anything; 3 = its third option (the
+        # recommended one comes first). Right to Q3, Down to the text field
+        # (Space on an option would pick it), own words, Enter sends.
+        driver.send("key right", "wait 200", "key 3", "key right", "wait 200",
                     "key down", "type Maya does", "key enter")
         got = wait_for(lambda: "GOT: Round 1: the user answered." in transcript(), 15)
         text = json.dumps(transcript())
@@ -767,7 +776,7 @@ def handover_check(sandbox):
     third_project = os.path.join(sandbox, "third project")
     for folder in (home, auto, second_project, third_project):
         os.makedirs(folder)
-    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = sandbox_env(home, auto)
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     strays = []
@@ -840,7 +849,7 @@ def lease_check(sandbox):
         except (OSError, ValueError):
             return None
 
-    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = sandbox_env(home, auto)
     env.pop("PI_EXECUTABLE", None)
     quote = lambda path: "".join(c if c.isalnum() or c in "-._~" else "%%%02X" % ord(c)
                                  for c in path.replace(os.sep, "/"))
@@ -868,8 +877,11 @@ def lease_check(sandbox):
         subprocess.run([EXE, link], env=env, capture_output=True, timeout=30)
         pis = wait_for(lambda: session_pis(app.pid), 25) or {}
         check("lease: once the terminal pi is gone, the session opens", bool(pis), descendants(app.pid))
-        held = wait_for(lambda: (lease() or {}).get("pid") in pis and lease(), 25) or lease()
-        check("lease: the app's pi holds the session now", bool(held) and held.get("pid") in pis, held)
+        # pi.cmd starts two node processes (launcher, then pi itself): compare
+        # with the session pis running when the lease is read.
+        held = wait_for(lambda: (lease() or {}).get("pid") in session_pis(app.pid) and lease(), 25) or lease()
+        check("lease: the app's pi holds the session now",
+              bool(held) and held.get("pid") in session_pis(app.pid), (held, session_pis(app.pid)))
         check("lease: ... marked as Pi GPUI with the app's pid",
               bool(held) and held.get("surface") == "Pi GPUI" and held.get("appPid") == app.pid, held)
         holder = node_lease("console.log(m.leaseHolder(a[0]) ?? 'nobody');", session, wait=True)
@@ -1162,7 +1174,7 @@ def main_check(sandbox):
     for folder in (home, auto, project):
         os.makedirs(folder)
     log_path = os.path.join(sandbox, "app.log")
-    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = sandbox_env(home, auto)
     env.pop("PI_EXECUTABLE", None)
 
     log = open(log_path, "w")

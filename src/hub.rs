@@ -964,6 +964,21 @@ impl HubView {
         cx.notify();
     }
 
+    /// The project row's reload button: reads the project's pi sessions again,
+    /// so sessions made elsewhere (a terminal pi) show up. A collapsed project
+    /// opens, so the result is visible.
+    fn refresh_workspace(&mut self, workspace: &Path, cx: &mut Context<Self>) {
+        let Some(entry) = self.entry_mut(workspace) else {
+            return;
+        };
+        if !entry.expanded {
+            entry.expanded = true;
+            self.save(cx);
+        }
+        self.load_sessions(workspace, cx);
+        cx.notify();
+    }
+
     fn load_sessions(&mut self, workspace: &Path, cx: &mut Context<Self>) {
         let path = workspace.to_path_buf();
         let listing = cx.background_spawn({
@@ -2360,6 +2375,19 @@ impl HubView {
                     .on_click(cx.listener({
                         let path = path.clone();
                         move |this, _, _, cx| this.start_chat(&path, None, cx)
+                    })),
+            )
+            .child(
+                IconButton::new(("refresh-workspace", index), IconName::Refresh)
+                    .size(ButtonSize::Compact)
+                    .icon_size(IconSize::XSmall)
+                    .disabled(entry.refreshing)
+                    .tooltip(Tooltip::text(
+                        "Look for new sessions (from pi in a terminal, for example)",
+                    ))
+                    .on_click(cx.listener({
+                        let path = path.clone();
+                        move |this, _, _, cx| this.refresh_workspace(&path, cx)
                     })),
             )
             .child(

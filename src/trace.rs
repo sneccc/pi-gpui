@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 /// Larger traces are copied as their path (pasting megabytes helps nobody).
 pub const CLIPBOARD_LIMIT: usize = 256 * 1024;
+/// How much of the app log a trace carries.
+const APP_LOG_LINES: usize = 300;
 
 /// What the app knows about the session; read on the main thread.
 #[derive(Clone, Debug, Default)]
@@ -36,11 +38,16 @@ pub struct Files {
     /// (agent file name, contents), sorted.
     pub agents: Vec<(String, String)>,
     pub subagents_folder: Option<PathBuf>,
+    /// The end of the app log (see app_log.rs): errors and notices.
+    pub app_log: Option<String>,
 }
 
 /// Reads the session's files. Blocks on the disk: run it in the background.
 pub fn read_files(state: &SessionState) -> Files {
-    let mut files = Files::default();
+    let mut files = Files {
+        app_log: crate::app_log::tail(APP_LOG_LINES),
+        ..Files::default()
+    };
     let Some(file) = &state.file else {
         return files;
     };
@@ -180,6 +187,16 @@ pub fn render(state: &SessionState, files: &Files, now: &str) -> String {
             "Nothing published: the session is not open in the app, has no subagents, or pi-durable-subagents without the Pi GPUI publisher. Its database is `<pi agent dir>/durable-subagents/<sha256 of the session id>.sqlite`.\n",
         ),
     }
+    out.push_str("\n## App log (last lines)\n\n");
+    match &files.app_log {
+        Some(log) if !log.trim().is_empty() => {
+            if let Some(path) = crate::app_log::path() {
+                out.push_str(&format!("From `{}`.\n\n", path.display()));
+            }
+            out.push_str(&fenced("text", log));
+        }
+        _ => out.push_str("No app log yet.\n"),
+    }
     out.push_str("\n## Session file (JSONL)\n\n");
     match &files.session_jsonl {
         Some(text) => out.push_str(&fenced("jsonl", text)),
@@ -246,6 +263,9 @@ mod tests {
             fleet: Some("{\"agents\":[]}".into()),
             agents: vec![("scout.json".into(), "{\"name\":\"scout\"}".into())],
             subagents_folder: Some(PathBuf::from("C:/cache/subagents/s1")),
+            app_log: Some(
+                "2026-11-27 14:00:00.000 pi-gpui: Durable error: database is locked".into(),
+            ),
         };
         let trace = render(&state(), &files, "2026-11-27 12:00");
         for expected in [
@@ -257,6 +277,8 @@ mod tests {
             "- messages in the session file: 1",
             "- subagents published: 1",
             "### scout.json",
+            "## App log (last lines)",
+            "Durable error: database is locked",
             "## Session file (JSONL)",
         ] {
             assert!(trace.contains(expected), "missing {expected:?} in\n{trace}");

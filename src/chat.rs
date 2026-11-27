@@ -2575,7 +2575,7 @@ impl ChatView {
                         )),
                 )
                 .when(!images.is_empty(), |this| {
-                    this.child(thumbnails(index, images, &colors))
+                    this.child(thumbnails(index, images, None, &colors))
                 })
                 .into_any_element(),
             Row::Assistant {
@@ -2653,7 +2653,8 @@ impl ChatView {
                     .as_ref()
                     .map(|call_id| self.render_plugin_view(call_id, name, cx));
                 let plugin_prompt = self.render_plugin_prompt(index, window, cx);
-                let has_details = !output.is_empty() || !images.is_empty();
+                // Images are always shown; the disclosure opens the text output.
+                let has_details = !output.is_empty();
                 let running = *status == ToolStatus::Running;
                 // Output streams in open, unless the user closed this row.
                 let open = expanded.unwrap_or(default_open || (running && !output.is_empty()))
@@ -2736,7 +2737,26 @@ impl ChatView {
                                 ))
                             }),
                     )
-                    .when(open, |this| {
+                    // Pictures a tool returns (pi's `read` on an image, screenshots)
+                    // show right away, also while the text output is closed.
+                    .when(!images.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .px(px(8.))
+                                .py(px(6.))
+                                .border_t_1()
+                                .border_color(colors.border_variant)
+                                .child(thumbnails(
+                                    index,
+                                    images,
+                                    (name == "read")
+                                        .then(|| self.workspace.join(detail))
+                                        .filter(|path| path.is_file()),
+                                    &colors,
+                                )),
+                        )
+                    })
+                    .when(open && !output.is_empty(), |this| {
                         this.child(
                             div()
                                 .px(px(8.))
@@ -2752,12 +2772,7 @@ impl ChatView {
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted)
                                     .monospace(),
-                                )
-                                .when(!images.is_empty(), |this| {
-                                    this.child(
-                                        div().pt(px(6.)).child(thumbnails(index, images, &colors)),
-                                    )
-                                }),
+                                ),
                         )
                     })
                     .children(session_links)
@@ -3909,15 +3924,20 @@ fn text_hash(text: &str) -> u64 {
 }
 
 /// Image previews under a message or tool result. A click on an image file
-/// opens it.
-fn thumbnails(row: usize, images: &[Picture], colors: &crate::ui::ThemeColors) -> AnyElement {
+/// opens it; `source` is the file inline pictures came from (pi's `read`).
+fn thumbnails(
+    row: usize,
+    images: &[Picture],
+    source: Option<PathBuf>,
+    colors: &crate::ui::ThemeColors,
+) -> AnyElement {
     h_flex()
         .flex_wrap()
         .gap(px(8.))
         .children(images.iter().enumerate().map(|(position, picture)| {
             let path = match picture {
                 Picture::File(path) => Some(path.clone()),
-                Picture::Data(_) => None,
+                Picture::Data(_) => source.clone(),
             };
             div()
                 .id(ElementId::Name(format!("thumb-{row}-{position}").into()))

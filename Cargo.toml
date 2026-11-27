@@ -37,3 +37,7 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[build-dependencies]
+# Windows: icon and version resource (build.rs). Already in the tree via gpui.
+embed-resource = "3"

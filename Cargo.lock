@@ -3576,6 +3576,7 @@ version = "0.2.11"
 dependencies = [
  "base64 0.23.1",
  "block",
+ "embed-resource",
  "futures",
  "gpui",
  "image",
@@ -4277,7 +4278,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4794,6 +4795,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
+ "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]
 

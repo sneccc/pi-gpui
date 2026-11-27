@@ -1,0 +1,37 @@
+// Windows resources of pi-gpui.exe. A template: build.rs fills in @ICON@
+// (absolute path), @VERSION_NUMBERS@ (0,2,11,0) and @VERSION@ (0.2.11) from
+// Cargo.toml, then compiles it with rc.exe.
+//
+// Icon ID 1: Explorer shows the first icon, and gpui loads ID 1 for the window
+// and the taskbar. pi-gpui.ico is made from the Linux PNG:
+//   magick resources/linux/pi-gpui.png -define icon:auto-resize=256,64,48,32,24,16 resources/windows/pi-gpui.ico
+
+#include <winver.h>
+
+1 ICON "@ICON@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION @VERSION_NUMBERS@
+PRODUCTVERSION @VERSION_NUMBERS@
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Pi GPUI"
+            VALUE "FileDescription", "Pi GPUI"
+            VALUE "FileVersion", "@VERSION@"
+            VALUE "InternalName", "pi-gpui"
+            VALUE "LegalCopyright", "MIT License"
+            VALUE "OriginalFilename", "pi-gpui.exe"
+            VALUE "ProductName", "Pi GPUI"
+            VALUE "ProductVersion", "@VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

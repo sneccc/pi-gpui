@@ -2896,15 +2896,33 @@ impl HubView {
                         "Open in {holder}. Close it there, or type /gpui there to move it here."
                     )))
             });
-        item.when_some(row.age.clone(), |item, age| {
-            item.end_slot(
-                Label::new(age)
-                    .size(LabelSize::XSmall)
-                    .color(Color::Placeholder),
+        let item = item
+            .when_some(row.age.clone(), |item, age| {
+                item.end_slot(
+                    Label::new(age)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Placeholder),
+                )
+            })
+            .end_hover_slot(hover_buttons);
+        // Right-click opens the same menu as the "…" button.
+        div()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener({
+                    let row = row.clone();
+                    move |this, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.session_menu = Some(SessionMenu {
+                            row: row.clone(),
+                            position: event.position,
+                        });
+                        cx.notify();
+                    }
+                }),
             )
-        })
-        .end_hover_slot(hover_buttons)
-        .into_any_element()
+            .child(item)
+            .into_any_element()
     }
 
     fn render_session_menu(&self, menu: &SessionMenu, cx: &mut Context<Self>) -> AnyElement {
@@ -2987,6 +3005,20 @@ impl HubView {
                 this.confirm_close(view.clone(), window, cx);
             }))
         });
+        let trace = item(
+            "menu-trace",
+            IconName::Copy,
+            "Copy session trace",
+            Color::Default,
+            true,
+        )
+        .on_click(cx.listener({
+            let row = row.clone();
+            move |this, _, _, cx| {
+                this.session_menu = None;
+                this.copy_session_trace(row.clone(), cx);
+            }
+        }));
         let delete = item(
             "menu-delete",
             IconName::Trash,
@@ -3021,12 +3053,90 @@ impl HubView {
                     .child(rename)
                     .child(hide)
                     .children(close)
+                    .child(trace)
                     .child(div().my(px(4.)).h(px(1.)).bg(colors.border_variant))
                     .child(delete),
             ),
         )
         .with_priority(1)
         .into_any_element()
+    }
+
+    /// Writes the session's trace (see trace.rs) and copies it, or its path
+    /// when it is too big to paste.
+    fn copy_session_trace(&mut self, row: SessionRow, cx: &mut Context<Self>) {
+        let open = row.open_chat.as_ref().map(|view| {
+            let chat = view.read(cx);
+            let status = if chat.is_running() { "running" } else { "idle" };
+            (chat.model_label(), status.to_string())
+        });
+        let file = row.file.clone().or_else(|| {
+            row.open_chat
+                .as_ref()
+                .and_then(|view| view.read(cx).session_file().map(Path::to_path_buf))
+        });
+        let state = crate::trace::SessionState {
+            title: row.title.to_string(),
+            workspace: row.workspace.clone(),
+            file,
+            open,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            pi: match &self.installation {
+                InstallationState::Ready(installation) => Some((
+                    installation.executable.clone(),
+                    installation.version.to_string(),
+                )),
+                _ => None,
+            },
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or_default();
+        let written = crate::chat::format_time(now_ms, true);
+        let task = cx.background_spawn(async move {
+            let files = crate::trace::read_files(&state);
+            let trace = crate::trace::render(&state, &files, &written);
+            let path = crate::trace::trace_path(&files, &now_ms.to_string())
+                .ok_or("no cache folder for traces")?;
+            std::fs::create_dir_all(path.parent().unwrap_or(&path)).map_err(|e| e.to_string())?;
+            std::fs::write(&path, &trace).map_err(|e| e.to_string())?;
+            Ok::<_, String>((
+                crate::trace::clipboard_text(&trace, &path),
+                trace.len(),
+                path,
+            ))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.notice = Some(match result {
+                    Ok((text, size, path)) => {
+                        let whole = text.len() == size;
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        (
+                            if whole {
+                                format!("Copied the session trace ({} KB).", size.div_ceil(1024))
+                            } else {
+                                format!(
+                                    "The trace is {} KB: copied a summary and its path, {}.",
+                                    size / 1024,
+                                    path.display()
+                                )
+                            },
+                            Color::Success,
+                        )
+                    }
+                    Err(error) => (
+                        format!("Could not write the session trace: {error}"),
+                        Color::Error,
+                    ),
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn start_rename(&mut self, row: SessionRow, window: &mut Window, cx: &mut Context<Self>) {

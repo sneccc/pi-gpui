@@ -69,6 +69,8 @@ Plugins can draw live views inside tool calls, in any language. [This one](examp
 - Command output streams into the transcript while it runs; the log button opens the full output, live or once the command ends, even past pi's 2,000-line cut.
 - Ayu Dark and Ayu Light themes, following the system's light or dark mode by default, plus your own themes (six colors are enough) and Zed themes.
 - Sessions can be renamed, hidden, closed (⌘W stops their pi, the session stays) or deleted (to the Trash).
+- Right-click a session (or its ⋯ menu) and choose *Copy session trace* to copy everything needed to diagnose it: versions, the session file, its lease and its subagents. It is also saved in the app's cache under `traces/`.
+- With [pi-durable-subagents](https://github.com/anasalqoyyum/pi-durable-subagents) publishing its fleet, the Subagents panel (⌥⌘A) lists the session's subagents live; click one to read its conversation.
 - Updates for pi and its extensions next to the pi version, with versions and whether this app supports the new pi. Applied with pi's own `pi update`, only when you click.
 
 ## Keys

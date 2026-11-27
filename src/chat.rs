@@ -3664,7 +3664,7 @@ fn now_ms() -> i64 {
 /// Local time of a Unix ms timestamp: "14:05" today, "12 Nov 14:05" on other
 /// days (with the year when it is not this one); `full` always gives the
 /// date with seconds.
-fn format_time(at: i64, full: bool) -> String {
+pub(crate) fn format_time(at: i64, full: bool) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

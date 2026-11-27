@@ -29,6 +29,12 @@ pub fn publish_root() -> Option<PathBuf> {
     crate::sessions::app_cache_directory().map(|cache| cache.join("subagents"))
 }
 
+/// What the extension published for a session (`id` from the session file's
+/// header), if anything.
+pub fn published_folder(session_id: &str) -> Option<PathBuf> {
+    Some(session_folder(&publish_root()?, session_id))
+}
+
 /// The folder of one parent session (its id, as the extension names it).
 fn session_folder(root: &Path, session_id: &str) -> PathBuf {
     root.join(sanitize(session_id))

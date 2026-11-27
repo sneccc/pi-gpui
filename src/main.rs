@@ -30,6 +30,7 @@ mod subagents;
 #[cfg(test)]
 mod test_support;
 mod text_input;
+mod trace;
 mod ui;
 mod updater;
 mod url_scheme;

@@ -9,7 +9,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - closing a session, and quitting the app, leave no pi process behind
   - the caption buttons (minimize, maximize, close) and a caption double click work
   - killing the app without warning (a crash) stops pi too
-  - pasting a file copied in Explorer does something (this overwrites the clipboard)
+  - pasting a file copied in Explorer does something (the clipboard is restored after)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
     python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit,images,grill,subagents] [path\\to\\pi-gpui.exe]
@@ -27,6 +27,7 @@ import ctypes
 import ctypes.wintypes as wt
 import json
 import re
+import contextlib
 import os
 import shutil
 import struct
@@ -104,6 +105,23 @@ def sandbox_env(home, auto):
     of the user's extensions or settings (and writes nothing into theirs)."""
     return dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto,
                 PI_CODING_AGENT_DIR=os.path.join(home, "pi-agent"))
+
+
+CLIPBOARD_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def borrowed_clipboard():
+    """For checks that overwrite the clipboard: one at a time (the groups run
+    in parallel threads), and the user's text is put back afterwards."""
+    with CLIPBOARD_LOCK:
+        saved = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+                               capture_output=True, text=True).stdout
+        try:
+            yield
+        finally:
+            subprocess.run(["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value $input"],
+                           input=saved, text=True, capture_output=True)
 
 
 def wait_for(predicate, seconds, interval=0.2):
@@ -836,11 +854,9 @@ def subagents_check(sandbox):
         check("subagents: Main returns to the session", back == chat)
 
         # Right-click the session in the sidebar: Copy session trace (the 4th
-        # menu item). It overwrites the clipboard: keep the user's text.
-        saved = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
-                               capture_output=True, text=True).stdout
+        # menu item). It overwrites the clipboard.
         traces = os.path.join(home, ".cache", "pi-gpui", "traces")
-        try:
+        with borrowed_clipboard():
             driver.send("move 150 121", "rclick 150 121", "wait 400", "move 230 225", "click 230 225")
             written = wait_for(lambda: os.path.isdir(traces) and os.listdir(traces), 10)
             trace = open(os.path.join(traces, written[0]), encoding="utf-8").read() if written else ""
@@ -849,9 +865,6 @@ def subagents_check(sandbox):
                   all(part in trace for part in ("## Session file (JSONL)", "### Fleet", "auth-scout",
                                                  "Found **src/auth.rs**.", "- subagents published: 1")),
                   trace[:600])
-        finally:
-            subprocess.run(["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value $input"],
-                           input=saved, text=True, capture_output=True)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
@@ -1282,6 +1295,14 @@ def main_check(sandbox):
               any(ext in text.split("using pi", 1)[-1].splitlines()[0].lower() for ext in (".cmd", ".exe", ".bat")),
               text)
         check("the app is still running", app.poll() is None)
+        # The app log (src/app_log.rs) gets the same lines, timed, while the
+        # captured stderr above still gets them too.
+        app_log = os.path.join(home, ".cache", "pi-gpui", "logs", "pi-gpui.log")
+        logged = wait_for(lambda: os.path.isfile(app_log) and "using pi" in open(app_log, errors="replace").read(), 10)
+        check("the app log records what the app writes to stderr", bool(logged))
+        check("... with the time on each line",
+              bool(logged) and re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} Pi GPUI .* started",
+                                        open(app_log, errors="replace").readline()) is not None)
 
         # --- automation protocol
         answer = driver.send("wait 300", "frobnicate", "key bogus-key", "click 10", "wait x")
@@ -1295,14 +1316,6 @@ def main_check(sandbox):
 
         # --- screenshot has real content
         shot = os.path.join(sandbox, "window.png")
-        # The app log (src/app_log.rs) gets the same lines, timed, while the
-        # captured stderr above still gets them too.
-        app_log = os.path.join(home, ".cache", "pi-gpui", "logs", "pi-gpui.log")
-        logged = wait_for(lambda: os.path.isfile(app_log) and "using pi" in open(app_log, errors="replace").read(), 10)
-        check("the app log records what the app writes to stderr", bool(logged))
-        check("... with the time on each line",
-              bool(logged) and re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} Pi GPUI .* started",
-                                        open(app_log, errors="replace").readline()) is not None)
         answer = driver.send(f"shot {shot}")
         check("shot reports ok", answer == [f"shot {shot}: ok"], answer)
         if os.path.isfile(shot):
@@ -1371,13 +1384,14 @@ def main_check(sandbox):
         attachment = os.path.join(sandbox, "attach me.txt")
         with open(attachment, "w") as file:
             file.write("hello")
-        copied = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", f"Set-Clipboard -Path '{attachment}'"],
-            capture_output=True).returncode == 0
-        check("the test could put a file on the clipboard", copied)
-        before_paste = picture("paste-before")
-        driver.send("key ctrl-v", "wait 500")
-        after_paste = picture("paste-after")
+        with borrowed_clipboard():
+            copied = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", f"Set-Clipboard -Path '{attachment}'"],
+                capture_output=True).returncode == 0
+            check("the test could put a file on the clipboard", copied)
+            before_paste = picture("paste-before")
+            driver.send("key ctrl-v", "wait 500")
+            after_paste = picture("paste-after")
         check("pasting a copied file changes the message field",
               before_paste and after_paste and before_paste != after_paste)
         # A broken file paste falls back to the path as plain text (the

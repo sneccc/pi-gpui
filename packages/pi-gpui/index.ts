@@ -8,11 +8,15 @@
  * this one to end, then opens `pi-gpui://open?workspace=...&session=...`
  * (with `open` on macOS; on Linux and Windows the link goes straight to the
  * `pi-gpui` binary, which hands it to the running app).
+ *
+ * It also keeps a terminal pi and Pi GPUI off each other's session: see
+ * watchSessionSharing and the session lease at the end of this file.
  */
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, win32 } from "node:path";
+import * as fs from "node:fs";
 
 const INSTALL_HINT =
 	process.platform === "darwin"
@@ -25,6 +29,7 @@ const INSTALL_HINT =
 const WINDOWS_SCHEME_COMMAND = "HKCU\\Software\\Classes\\pi-gpui\\shell\\open\\command";
 
 export default function (pi: any) {
+	watchSessionSharing(pi);
 	pi.registerCommand("gpui", {
 		description: "Continue this session in Pi GPUI, the native desktop app",
 		handler: async (_args: string, ctx: any) => {
@@ -98,6 +103,50 @@ export default function (pi: any) {
 			ctx.shutdown();
 		},
 	});
+}
+
+/**
+ * Two pi processes on one session mix up its history, and pi does not stop
+ * it. A terminal pi holds a lease on its session so Pi GPUI will not open it
+ * as well, and warns when Pi GPUI (or another lease holder) already has it:
+ * at start-up, and before /resume switches into it. Pi GPUI's own pi runs
+ * in RPC mode and holds its lease through the app's bridge extension.
+ */
+function watchSessionSharing(pi: any) {
+	let lease: ReturnType<typeof holdSession> | undefined;
+	pi.on("session_start", (_event: unknown, ctx: any) => {
+		lease?.release();
+		lease = undefined;
+		if (ctx.mode === "rpc") return;
+		const session: string | undefined = ctx.sessionManager.getSessionFile?.();
+		if (!session) return;
+		const holder = leaseHolder(session);
+		if (holder && ctx.hasUI !== false) {
+			ctx.ui.notify(sharedSessionWarning(holder), "warning");
+		}
+		lease = holdSession(session, "a terminal pi");
+	});
+	pi.on("session_before_switch", async (event: any, ctx: any) => {
+		if (ctx.mode === "rpc" || !event.targetSessionFile) return;
+		const holder = leaseHolder(event.targetSessionFile);
+		if (!holder || ctx.hasUI === false) return;
+		const open = await ctx.ui.confirm(
+			`This session is open in ${holder}`,
+			"Writing to it from two places mixes up its history. Open it here anyway?",
+		);
+		if (!open) return { cancel: true };
+	});
+	pi.on("session_shutdown", () => {
+		lease?.release();
+		lease = undefined;
+	});
+	// A new session's file appears with its first message.
+	pi.on("agent_start", () => lease?.refresh());
+	pi.on("agent_settled", () => lease?.refresh());
+}
+
+export function sharedSessionWarning(holder: string): string {
+	return `This session is also open in ${holder}. Messages sent from both mix up its history: close it there first, or /resume another session.`;
 }
 
 /**
@@ -198,3 +247,95 @@ function handlesLinks(app: string): boolean {
 		return false;
 	}
 }
+
+// --- session lease ---------------------------------------------------------
+// Keep this block identical in extensions/pi-gpui-bridge.ts and
+// packages/pi-gpui/index.ts (extensions/lease.test.ts checks it).
+//
+// pi does not stop two processes from writing one session file, so whoever
+// has a session open says so in `<session>.jsonl.lease` (pi-gui's
+// convention): {pid, surface, startedAt, updatedAt[, appPid]}. A lease counts
+// while its process lives and it was refreshed in the last five minutes;
+// `startedAt` (the process start, ms) tells a reused pid apart.
+
+/** pi-gui treats a lease as stale after five minutes; refresh well within that. */
+export const LEASE_TTL_MS = 5 * 60_000;
+const LEASE_REFRESH_MS = 60_000;
+
+export type Lease = { pid: number; surface?: string; startedAt?: number; updatedAt?: number; appPid?: number };
+
+export function readLease(session: string): Lease | undefined {
+	try {
+		const lease = JSON.parse(fs.readFileSync(`${session}.lease`, "utf8"));
+		return typeof lease?.pid === "number" ? lease : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Who else, a live process, holds `session`: its surface ("Pi GPUI", "a terminal pi"). */
+export function leaseHolder(session: string, now = Date.now()): string | undefined {
+	let modified: number;
+	try {
+		modified = fs.statSync(`${session}.lease`).mtimeMs;
+	} catch {
+		return undefined;
+	}
+	if (now - modified > LEASE_TTL_MS) return undefined;
+	const lease = readLease(session);
+	if (!lease || lease.pid === process.pid || !processAlive(lease.pid)) return undefined;
+	return lease.surface || "another app";
+}
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error: any) {
+		return error?.code === "EPERM";
+	}
+}
+
+/**
+ * Holds `session` for this process: writes the lease (once the session file
+ * exists, and never over another live holder's lease), rewrites it every
+ * minute and on `refresh()`, and removes it on `release()` or exit.
+ */
+export function holdSession(session: string, surface: string, extra: Partial<Lease> = {}) {
+	const path = `${session}.lease`;
+	const refresh = (): boolean => {
+		if (!fs.existsSync(session) || leaseHolder(session)) return false;
+		const lease: Lease = {
+			pid: process.pid,
+			surface,
+			startedAt: Math.round(performance.timeOrigin),
+			updatedAt: Date.now(),
+			...extra,
+		};
+		const staged = `${path}.${process.pid}.tmp`;
+		try {
+			fs.writeFileSync(staged, JSON.stringify(lease));
+			fs.renameSync(staged, path);
+			return true;
+		} catch {
+			try {
+				fs.unlinkSync(staged);
+			} catch {}
+			return false;
+		}
+	};
+	const timer = setInterval(refresh, LEASE_REFRESH_MS);
+	timer.unref?.();
+	const release = () => {
+		clearInterval(timer);
+		process.off("exit", release);
+		if (readLease(session)?.pid !== process.pid) return;
+		try {
+			fs.unlinkSync(path);
+		} catch {}
+	};
+	process.on("exit", release);
+	refresh();
+	return { refresh, release };
+}
+// --- end of session lease ---------------------------------------------------

@@ -108,7 +108,7 @@ Accepting an RPC command does not mean the work is done. In the pi version we st
 
 We never automatically repeat a command that may change files after a lost connection; we first find out the state of the run. Two writers of one session must never be started silently.
 
-pi 1.4 does not prevent two processes from opening the same session. So inside the app a session is opened at most once, and a session with a live pi-gui lease file (`<session>.jsonl.lease`) is not opened. A terminal pi leaves no lease files, so that conflict cannot be detected yet.
+pi 1.4 does not prevent two processes from opening the same session. So inside the app a session is opened at most once, and a session with a live pi-gui lease file (`<session>.jsonl.lease`) is not opened. The app's own pi processes write that lease too (the bridge extension, with the app's pid as `appPid` so the app does not refuse its own sessions), and so does a terminal pi with the `pi-gpui` package installed, which also warns when the app already has its session and asks before `/resume` switches into one. A lease counts while its process lives; its `startedAt` tells a reused pid apart. A terminal pi without the package leaves no lease, so that conflict is still not detected.
 
 The session list is built by reading pi's session directory (read-only, matched by the `cwd` field in each file header): pi has no RPC command that lists sessions. A session is opened with `pi --mode rpc --session <file>`, and its history comes from the `get_messages` command.
 

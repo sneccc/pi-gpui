@@ -25,6 +25,8 @@ Type `/gpui` in pi. This pi exits, and the same session opens in Pi GPUI with it
 
 The terminal pi exits first because pi does not protect a session file from two writers.
 
+For the same reason the package guards against two writers while you work: a terminal pi holds a lease on its session (`<session>.jsonl.lease`), so Pi GPUI will not open that session as well, and it warns you when Pi GPUI already has it open, or asks before `/resume` switches into such a session.
+
 Needs Pi GPUI 0.1.10 or newer on macOS, 0.2.0 or newer on Linux. Any tool can do the same with a link:
 
 ```sh

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `/gpui` works on Windows with the Windows build of Pi GPUI.
+- A terminal pi holds a lease on its session, so Pi GPUI does not open it at the same time, and warns (or asks before `/resume`) when Pi GPUI already has the session open.
 
 ## 0.2.0
 

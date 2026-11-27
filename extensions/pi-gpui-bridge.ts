@@ -12,7 +12,12 @@
  *    prompt cache lifetime, whether the provider bills a subscription, and
  *    plan limits from provider response headers. They are published as JSON
  *    through `setStatus("pi-gpui:usage", ...)`, which RPC forwards.
+ * 3. A lease on the open session (see "session lease" below), so a terminal
+ *    pi with the pi-gpui package can tell that Pi GPUI has it open. The app
+ *    sets PI_GPUI_APP_PID, so it can tell its own pi processes' leases apart.
  */
+import * as fs from "node:fs";
+
 const STATUS_KEY = "pi-gpui:usage";
 
 type PlanLimit = { windowMinutes: number; usedPercent: number; resetsAt?: number };
@@ -63,9 +68,26 @@ export default function (pi: any) {
 		} catch {}
 	};
 
-	pi.on("session_start", (_event: unknown, ctx: any) => publish(ctx));
+	let lease: ReturnType<typeof holdSession> | undefined;
+	const appPid = Number(process.env.PI_GPUI_APP_PID) || undefined;
+
+	pi.on("session_start", (_event: unknown, ctx: any) => {
+		publish(ctx);
+		lease?.release();
+		const session: string | undefined = ctx.sessionManager.getSessionFile?.();
+		lease = session ? holdSession(session, "Pi GPUI", { appPid }) : undefined;
+	});
+	pi.on("session_shutdown", () => {
+		lease?.release();
+		lease = undefined;
+	});
+	// A new session's file appears with its first message.
+	pi.on("agent_start", () => lease?.refresh());
 	pi.on("model_select", (_event: unknown, ctx: any) => publish(ctx));
-	pi.on("agent_settled", (_event: unknown, ctx: any) => publish(ctx));
+	pi.on("agent_settled", (_event: unknown, ctx: any) => {
+		publish(ctx);
+		lease?.refresh();
+	});
 	pi.on("after_provider_response", (event: any, ctx: any) => {
 		const provider = ctx.model?.provider;
 		if (!provider || event.status < 200 || event.status >= 300) return;
@@ -121,3 +143,95 @@ function parsePlanLimits(raw: Record<string, string>): PlanLimit[] {
 	}
 	return limits;
 }
+
+// --- session lease ---------------------------------------------------------
+// Keep this block identical in extensions/pi-gpui-bridge.ts and
+// packages/pi-gpui/index.ts (extensions/lease.test.ts checks it).
+//
+// pi does not stop two processes from writing one session file, so whoever
+// has a session open says so in `<session>.jsonl.lease` (pi-gui's
+// convention): {pid, surface, startedAt, updatedAt[, appPid]}. A lease counts
+// while its process lives and it was refreshed in the last five minutes;
+// `startedAt` (the process start, ms) tells a reused pid apart.
+
+/** pi-gui treats a lease as stale after five minutes; refresh well within that. */
+export const LEASE_TTL_MS = 5 * 60_000;
+const LEASE_REFRESH_MS = 60_000;
+
+export type Lease = { pid: number; surface?: string; startedAt?: number; updatedAt?: number; appPid?: number };
+
+export function readLease(session: string): Lease | undefined {
+	try {
+		const lease = JSON.parse(fs.readFileSync(`${session}.lease`, "utf8"));
+		return typeof lease?.pid === "number" ? lease : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Who else, a live process, holds `session`: its surface ("Pi GPUI", "a terminal pi"). */
+export function leaseHolder(session: string, now = Date.now()): string | undefined {
+	let modified: number;
+	try {
+		modified = fs.statSync(`${session}.lease`).mtimeMs;
+	} catch {
+		return undefined;
+	}
+	if (now - modified > LEASE_TTL_MS) return undefined;
+	const lease = readLease(session);
+	if (!lease || lease.pid === process.pid || !processAlive(lease.pid)) return undefined;
+	return lease.surface || "another app";
+}
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error: any) {
+		return error?.code === "EPERM";
+	}
+}
+
+/**
+ * Holds `session` for this process: writes the lease (once the session file
+ * exists, and never over another live holder's lease), rewrites it every
+ * minute and on `refresh()`, and removes it on `release()` or exit.
+ */
+export function holdSession(session: string, surface: string, extra: Partial<Lease> = {}) {
+	const path = `${session}.lease`;
+	const refresh = (): boolean => {
+		if (!fs.existsSync(session) || leaseHolder(session)) return false;
+		const lease: Lease = {
+			pid: process.pid,
+			surface,
+			startedAt: Math.round(performance.timeOrigin),
+			updatedAt: Date.now(),
+			...extra,
+		};
+		const staged = `${path}.${process.pid}.tmp`;
+		try {
+			fs.writeFileSync(staged, JSON.stringify(lease));
+			fs.renameSync(staged, path);
+			return true;
+		} catch {
+			try {
+				fs.unlinkSync(staged);
+			} catch {}
+			return false;
+		}
+	};
+	const timer = setInterval(refresh, LEASE_REFRESH_MS);
+	timer.unref?.();
+	const release = () => {
+		clearInterval(timer);
+		process.off("exit", release);
+		if (readLease(session)?.pid !== process.pid) return;
+		try {
+			fs.unlinkSync(path);
+		} catch {}
+	};
+	process.on("exit", release);
+	refresh();
+	return { refresh, release };
+}
+// --- end of session lease ---------------------------------------------------

@@ -404,7 +404,10 @@ pub fn spawn_pi(
     }
     command
         .current_dir(workspace)
-        .env("PATH", path_with_executable_dir(&installation.executable));
+        .env("PATH", path_with_executable_dir(&installation.executable))
+        // The bridge puts it in the session lease: our own pi's lease is not a
+        // reason to refuse the session (sessions::foreign_lease_holder).
+        .env("PI_GPUI_APP_PID", std::process::id().to_string());
     JsonlProcess::spawn(&mut command)
 }
 

@@ -147,7 +147,7 @@ So far it was tested on Ubuntu 24.04 on arm64 in a VM (GNOME on X11, and Wayland
 
 ## Known limits
 
-- A pi running in a terminal on the same session is not detected.
+- A pi running in a terminal on the same session is detected only when that pi has the `pi-gpui` package (`/gpui`) installed: then the app will not open the session, and the terminal pi warns when the app already has it. Without the package it is not detected.
 - Extension status lines, widgets and window titles (`setStatus`, `setWidget`, `setTitle`) are not shown yet. Extension questions (`select`, `confirm`, `input`, `editor`) work.
 
 ## Development

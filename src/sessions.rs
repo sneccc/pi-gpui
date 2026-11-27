@@ -1,5 +1,6 @@
 //! Read-only access to pi's session files: where they live, short summaries for
-//! the sidebar and pi-gui's single-writer leases. Never writes into pi's data.
+//! the sidebar and pi-gui's single-writer leases. Never writes into pi's data
+//! (the leases of our own pi processes are written by the bridge extension).
 //!
 //! All functions block on the filesystem; call them from a background task.
 
@@ -164,6 +165,9 @@ pub fn session_title(path: &Path, workspace: &Path) -> Option<String> {
 
 /// Who else holds `session` open, according to pi-gui's lease convention.
 /// pi itself does not prevent two writers, so this is the only signal we get.
+/// Our own pi processes hold leases too (the bridge extension, marked with
+/// our pid as `appPid`); those do not count. A terminal pi with the pi-gpui
+/// package holds one as "a terminal pi".
 pub fn foreign_lease_holder(session: &Path) -> Option<String> {
     let lease_path = PathBuf::from(format!("{}.lease", session.display()));
     let age = fs::metadata(&lease_path)
@@ -175,10 +179,28 @@ pub fn foreign_lease_holder(session: &Path) -> Option<String> {
         return None;
     }
     let lease: Value = serde_json::from_slice(&fs::read(&lease_path).ok()?).ok()?;
-    if let Some(pid) = lease["pid"].as_u64()
-        && !process_is_alive(pid)
-    {
+    lease_holder(&lease, u64::from(std::process::id()))
+}
+
+/// How far a lease's `startedAt` may be from the process's real start: node
+/// takes it at start-up, a little after the process was created.
+const START_TOLERANCE_MS: u64 = 10_000;
+
+/// The holder named by a lease, unless it is one of our own pi processes or
+/// its process is gone (or the pid now belongs to a newer process).
+fn lease_holder(lease: &Value, own_pid: u64) -> Option<String> {
+    if lease["appPid"].as_u64() == Some(own_pid) {
         return None;
+    }
+    if let Some(pid) = lease["pid"].as_u64() {
+        if !process_is_alive(pid) {
+            return None;
+        }
+        if let (Some(claimed), Some(actual)) = (lease["startedAt"].as_u64(), process_start_ms(pid))
+            && claimed.abs_diff(actual) > START_TOLERANCE_MS
+        {
+            return None;
+        }
     }
     Some(
         lease["surface"]
@@ -186,6 +208,47 @@ pub fn foreign_lease_holder(session: &Path) -> Option<String> {
             .unwrap_or("another app")
             .to_string(),
     )
+}
+
+/// When process `pid` started, in ms since the Unix epoch. Windows only:
+/// there pids come back into use quickly, so a lease's pid alone can point at
+/// an unrelated process. Elsewhere `None` (the check is skipped).
+#[cfg(windows)]
+fn process_start_ms(pid: u64) -> Option<u64> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn GetProcessTimes(
+            process: isize,
+            creation: *mut u64,
+            exit: *mut u64,
+            kernel: *mut u64,
+            user: *mut u64,
+        ) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    /// 100 ns ticks between 1601-01-01 (FILETIME) and 1970-01-01.
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+
+    let pid = u32::try_from(pid).ok()?;
+    // SAFETY: plain kernel32 calls with valid out pointers; the handle is
+    // closed before returning.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process == 0 {
+            return None;
+        }
+        let (mut creation, mut exit, mut kernel, mut user) = (0, 0, 0, 0);
+        let ok = GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) != 0;
+        CloseHandle(process);
+        ok.then(|| creation.saturating_sub(UNIX_EPOCH_TICKS) / 10_000)
+    }
+}
+
+#[cfg(not(windows))]
+fn process_start_ms(_pid: u64) -> Option<u64> {
+    None
 }
 
 /// Whether a process with this id is running (Windows: it has not exited).
@@ -354,6 +417,84 @@ pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    #[test]
+    fn a_live_lease_names_its_holder_but_our_own_pi_does_not_count() {
+        let me = u64::from(std::process::id());
+        let other = me + 1;
+        let lease = serde_json::json!({ "pid": me, "surface": "a terminal pi" });
+        assert_eq!(
+            lease_holder(&lease, other).as_deref(),
+            Some("a terminal pi")
+        );
+        let ours = serde_json::json!({ "pid": me, "surface": "Pi GPUI", "appPid": other });
+        assert_eq!(lease_holder(&ours, other), None, "our own pi's lease");
+        assert_eq!(
+            lease_holder(&ours, other + 1).as_deref(),
+            Some("Pi GPUI"),
+            "another Pi GPUI's pi"
+        );
+        let unnamed = serde_json::json!({ "pid": me });
+        assert_eq!(
+            lease_holder(&unnamed, other).as_deref(),
+            Some("another app")
+        );
+    }
+
+    #[test]
+    fn a_lease_of_a_dead_process_does_not_count() {
+        let mut child = crate::process::command(if cfg!(windows) { "cmd" } else { "true" })
+            .args(if cfg!(windows) {
+                &["/c", "exit"][..]
+            } else {
+                &[][..]
+            })
+            .spawn()
+            .unwrap();
+        let pid = u64::from(child.id());
+        child.wait().unwrap();
+        let lease = serde_json::json!({ "pid": pid, "surface": "a terminal pi" });
+        assert_eq!(lease_holder(&lease, 1), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_reused_pid_does_not_keep_a_lease_alive() {
+        let me = u64::from(std::process::id());
+        let started = process_start_ms(me).expect("our own start time");
+        assert!(started <= now_ms() && now_ms() - started < 24 * 3600 * 1000);
+        let fresh = serde_json::json!({ "pid": me, "surface": "a terminal pi", "startedAt": started + 300 });
+        assert_eq!(lease_holder(&fresh, 1).as_deref(), Some("a terminal pi"));
+        // Written by a process that started long before ours, under the same pid.
+        let reused = serde_json::json!({ "pid": me, "surface": "a terminal pi", "startedAt": started - 3_600_000 });
+        assert_eq!(lease_holder(&reused, 1), None);
+    }
+
+    #[test]
+    fn foreign_lease_holder_reads_the_lease_beside_the_session() {
+        let folder = std::env::temp_dir().join(format!("pi-gpui-lease-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let session = folder.join("s.jsonl");
+        fs::write(&session, "{}\n").unwrap();
+        assert_eq!(foreign_lease_holder(&session), None, "no lease file");
+        let lease = serde_json::json!({ "pid": std::process::id(), "surface": "a terminal pi" });
+        fs::write(folder.join("s.jsonl.lease"), lease.to_string()).unwrap();
+        assert_eq!(
+            foreign_lease_holder(&session).as_deref(),
+            Some("a terminal pi")
+        );
+        let ours = serde_json::json!({ "pid": std::process::id(), "appPid": std::process::id() });
+        fs::write(folder.join("s.jsonl.lease"), ours.to_string()).unwrap();
+        assert_eq!(foreign_lease_holder(&session), None, "our own pi's lease");
+        fs::remove_dir_all(&folder).ok();
+    }
 
     #[cfg(windows)]
     #[test]

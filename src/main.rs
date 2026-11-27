@@ -26,6 +26,8 @@ mod sessions;
 mod settings;
 #[cfg(not(target_os = "macos"))]
 mod single_instance;
+#[cfg(test)]
+mod test_support;
 mod text_input;
 mod ui;
 mod updater;

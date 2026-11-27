@@ -555,8 +555,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_finds_cmd_shims_not_bare_scripts() {
-        let directory = std::env::temp_dir().join(format!("pi-gpui-find-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
+        let folder = crate::test_support::TempDir::new("find");
+        let directory = folder.path().to_path_buf();
         std::fs::write(directory.join("fakepi"), "#!/bin/sh").unwrap();
         std::fs::write(directory.join("fakepi.cmd"), "@echo off").unwrap();
         let path = std::env::join_paths([&directory]).unwrap();
@@ -572,6 +572,5 @@ mod tests {
         assert_eq!(search("fakepi"), Some(directory.join("fakepi.cmd")));
         assert_eq!(search("fakepi.cmd"), Some(directory.join("fakepi.cmd")));
         assert_eq!(search("nothing"), None);
-        std::fs::remove_dir_all(&directory).ok();
     }
 }

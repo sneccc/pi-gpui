@@ -685,8 +685,8 @@ mod tests {
     #[test]
     #[ignore = "overwrites the clipboard"]
     fn clipboard_files_copied_in_explorer_are_read_back() {
-        let directory = std::env::temp_dir().join(format!("pi gpui clip {}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
+        let folder = crate::test_support::TempDir::new("clip with spaces");
+        let directory = folder.path().to_path_buf();
         let first = directory.join("a picture.png");
         let second = directory.join("notes \u{e9}.txt");
         std::fs::write(&first, b"png").unwrap();
@@ -702,6 +702,5 @@ mod tests {
             .unwrap();
         assert!(status.success());
         assert!(clipboard_file_paths().is_empty());
-        std::fs::remove_dir_all(&directory).ok();
     }
 }

@@ -479,8 +479,7 @@ mod tests {
 
     #[test]
     fn foreign_lease_holder_reads_the_lease_beside_the_session() {
-        let folder = std::env::temp_dir().join(format!("pi-gpui-lease-{}", std::process::id()));
-        fs::create_dir_all(&folder).unwrap();
+        let folder = crate::test_support::TempDir::new("lease");
         let session = folder.join("s.jsonl");
         fs::write(&session, "{}\n").unwrap();
         assert_eq!(foreign_lease_holder(&session), None, "no lease file");
@@ -493,7 +492,6 @@ mod tests {
         let ours = serde_json::json!({ "pid": std::process::id(), "appPid": std::process::id() });
         fs::write(folder.join("s.jsonl.lease"), ours.to_string()).unwrap();
         assert_eq!(foreign_lease_holder(&session), None, "our own pi's lease");
-        fs::remove_dir_all(&folder).ok();
     }
 
     #[cfg(windows)]

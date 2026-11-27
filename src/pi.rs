@@ -408,6 +408,10 @@ pub fn spawn_pi(
         // The bridge puts it in the session lease: our own pi's lease is not a
         // reason to refuse the session (sessions::foreign_lease_holder).
         .env("PI_GPUI_APP_PID", std::process::id().to_string());
+    // pi-durable-subagents publishes its fleet there for the Subagents panel.
+    if let Some(folder) = crate::subagents::publish_root() {
+        command.env("PI_GPUI_SUBAGENTS_DIR", folder);
+    }
     JsonlProcess::spawn(&mut command)
 }
 

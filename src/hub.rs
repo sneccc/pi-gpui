@@ -50,6 +50,7 @@ actions!(
         ToggleRightDock,
         ToggleFiles,
         ToggleChanges,
+        ToggleSubagents,
         ReloadSessions,
         SearchSessions,
         CloseSessionSearch,
@@ -93,6 +94,12 @@ pub fn bind_keys(cx: &mut App) {
         ),
         KeyBinding::new(&crate::keys::binding("cmd-n"), NewChat, Some(KEY_CONTEXT)),
         KeyBinding::new(&crate::keys::binding("cmd-w"), CloseChat, Some(KEY_CONTEXT)),
+        // Like the subagents extension's own overview (Ctrl+Alt+A in pi).
+        KeyBinding::new(
+            &crate::keys::binding("alt-cmd-a"),
+            ToggleSubagents,
+            Some(KEY_CONTEXT),
+        ),
         KeyBinding::new(
             &crate::keys::binding("cmd-shift-e"),
             ToggleDetails,
@@ -361,6 +368,7 @@ pub struct HubView {
     docks: Docks,
     diff_panel: Entity<DiffPanel>,
     files_panel: Entity<FilesPanel>,
+    subagents_panel: Entity<crate::subagents::SubagentsPanel>,
     /// Right-click menu of a side panel.
     panel_menu: Option<PanelMenu>,
     /// A dock edge is being dragged.
@@ -478,6 +486,13 @@ impl HubView {
         let docks = state_path.as_deref().map(load_docks).unwrap_or_default();
         let diff_panel = cx.new(|_| DiffPanel::new());
         let files_panel = cx.new(FilesPanel::new);
+        let subagents_panel = cx.new(crate::subagents::SubagentsPanel::new);
+        // Picking a subagent changes the main area.
+        cx.subscribe(
+            &subagents_panel,
+            |_, _, _: &crate::subagents::SubagentsEvent, cx| cx.notify(),
+        )
+        .detach();
         cx.subscribe(
             &files_panel,
             |this: &mut Self, _, event: &FilesEvent, cx| {
@@ -527,6 +542,7 @@ impl HubView {
             docks,
             diff_panel,
             files_panel,
+            subagents_panel,
             panel_menu: None,
             resizing_dock: None,
             panels_follow: None,
@@ -1662,6 +1678,10 @@ impl HubView {
         match event {
             ChatEvent::Changed => {
                 self.report_session_state(&chat, cx);
+                // A new session gets its file with the first message.
+                if self.active_chat.as_ref() == Some(&chat) {
+                    self.refresh_subagents(cx);
+                }
                 cx.notify();
             }
             ChatEvent::OpenSession { workspace, file } => {
@@ -1795,6 +1815,9 @@ impl HubView {
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
             PanelKind::Diff => AnyView::from(self.diff_panel.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            PanelKind::Subagents => AnyView::from(self.subagents_panel.clone())
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
         };
@@ -2352,18 +2375,59 @@ impl HubView {
         self.toggle_panel(PanelKind::Diff, cx);
     }
 
+    fn toggle_subagents(&mut self, _: &ToggleSubagents, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_panel(PanelKind::Subagents, cx);
+        self.refresh_subagents(cx);
+    }
+
     fn show_panel(&mut self, kind: PanelKind, cx: &mut Context<Self>) {
         self.docks.show(kind);
         self.save(cx);
         match kind {
             PanelKind::Files => self.refresh_files(cx),
             PanelKind::Diff => self.refresh_diff(cx),
+            PanelKind::Subagents => self.refresh_subagents(cx),
             PanelKind::Sessions => {}
         }
         cx.notify();
     }
 
     /// Follows the active session's project; reads the disk only while visible.
+    /// A subagent's conversation in the main area, with the way back.
+    fn render_subagent(
+        &self,
+        view: Entity<crate::subagents::TranscriptView>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.theme().colors.clone();
+        v_flex()
+            .flex_1()
+            .min_h(px(0.))
+            .child(
+                h_flex()
+                    .px(px(12.))
+                    .py(px(4.))
+                    .gap(px(6.))
+                    .border_b_1()
+                    .border_color(colors.border_variant)
+                    .child(
+                        Button::new("subagent-back", "Back to the session")
+                            .size(ButtonSize::Compact)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.subagents_panel
+                                    .update(cx, |panel, cx| panel.show_agent(None, window, cx));
+                            })),
+                    )
+                    .child(
+                        Label::new("Subagent · read only")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            )
+            .child(div().flex_1().min_h(px(0.)).child(view))
+            .into_any_element()
+    }
+
     fn refresh_files(&mut self, cx: &mut Context<Self>) {
         let workspace = self
             .active_chat
@@ -2396,6 +2460,18 @@ impl HubView {
     fn refresh_visible_panels(&mut self, cx: &mut Context<Self>) {
         self.refresh_files(cx);
         self.refresh_diff(cx);
+        self.refresh_subagents(cx);
+    }
+
+    /// The Subagents panel follows the active session (its file names it).
+    fn refresh_subagents(&mut self, cx: &mut Context<Self>) {
+        let file = self
+            .active_chat
+            .as_ref()
+            .and_then(|chat| chat.read(cx).session_file().map(Path::to_path_buf));
+        let visible = self.docks.is_visible(PanelKind::Subagents);
+        self.subagents_panel
+            .update(cx, |panel, cx| panel.set_session(file, visible, cx));
     }
 
     fn render_workspace(
@@ -4941,15 +5017,17 @@ impl Render for HubView {
         } else if let Some(search_page) = search_page {
             search_page
         } else {
-            match &self.active_chat {
-                Some(chat) => div()
+            let subagent = self.subagents_panel.read(cx).viewing().cloned();
+            match (&self.active_chat, subagent) {
+                (Some(_), Some(view)) => self.render_subagent(view, cx),
+                (Some(chat), None) => div()
                     .flex_1()
                     .min_h(px(0.))
                     .child(
                         AnyView::from(chat.clone()).cached(StyleRefinement::default().size_full()),
                     )
                     .into_any_element(),
-                None => match &self.installation {
+                (None, _) => match &self.installation {
                     InstallationState::Failed(error) => self.render_pi_setup(error, cx),
                     _ => self.render_placeholder(cx).into_any_element(),
                 },
@@ -4971,6 +5049,7 @@ impl Render for HubView {
             .on_action(cx.listener(Self::toggle_right_dock))
             .on_action(cx.listener(Self::toggle_files))
             .on_action(cx.listener(Self::toggle_changes))
+            .on_action(cx.listener(Self::toggle_subagents))
             .on_action(cx.listener(Self::reload_sessions))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 let Some(side) = this.resizing_dock else {

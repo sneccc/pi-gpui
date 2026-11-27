@@ -11,16 +11,23 @@ pub enum PanelKind {
     Sessions,
     Files,
     Diff,
+    Subagents,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 3] = [PanelKind::Sessions, PanelKind::Files, PanelKind::Diff];
+    pub const ALL: [PanelKind; 4] = [
+        PanelKind::Sessions,
+        PanelKind::Files,
+        PanelKind::Diff,
+        PanelKind::Subagents,
+    ];
 
     fn key(self) -> &'static str {
         match self {
             PanelKind::Sessions => "sessions",
             PanelKind::Files => "files",
             PanelKind::Diff => "diff",
+            PanelKind::Subagents => "subagents",
         }
     }
 
@@ -33,6 +40,7 @@ impl PanelKind {
             PanelKind::Sessions => "Projects",
             PanelKind::Files => "Files",
             PanelKind::Diff => "Changes",
+            PanelKind::Subagents => "Subagents",
         }
     }
 
@@ -41,6 +49,7 @@ impl PanelKind {
             PanelKind::Sessions => IconName::Message,
             PanelKind::Files => IconName::Folder,
             PanelKind::Diff => IconName::Diff,
+            PanelKind::Subagents => IconName::Sparkle,
         }
     }
 }
@@ -118,7 +127,7 @@ impl Default for Docks {
                 width: 272.,
             },
             right: Dock {
-                panels: vec![PanelKind::Files, PanelKind::Diff],
+                panels: vec![PanelKind::Files, PanelKind::Diff, PanelKind::Subagents],
                 active: Some(PanelKind::Files),
                 open: false,
                 width: 360.,
@@ -240,7 +249,12 @@ mod tests {
         assert_eq!(restored.left.active, None);
         assert_eq!(
             restored.right.panels,
-            vec![PanelKind::Files, PanelKind::Diff, PanelKind::Sessions]
+            vec![
+                PanelKind::Files,
+                PanelKind::Diff,
+                PanelKind::Subagents,
+                PanelKind::Sessions
+            ]
         );
         assert_eq!(restored.right.active, Some(PanelKind::Sessions));
         assert_eq!(restored.right.width, 400.);
@@ -258,7 +272,12 @@ mod tests {
             vec![PanelKind::Files, PanelKind::Sessions]
         );
         assert_eq!(docks.left.active, Some(PanelKind::Files));
-        assert_eq!(docks.right.panels, vec![PanelKind::Diff]);
+        // Panels a saved layout does not know (added later) go where the
+        // default puts them: the right dock.
+        assert_eq!(
+            docks.right.panels,
+            vec![PanelKind::Diff, PanelKind::Subagents]
+        );
         assert_eq!(docks.right.active, Some(PanelKind::Diff));
     }
 

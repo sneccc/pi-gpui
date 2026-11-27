@@ -26,6 +26,7 @@ mod sessions;
 mod settings;
 #[cfg(not(target_os = "macos"))]
 mod single_instance;
+mod subagents;
 #[cfg(test)]
 mod test_support;
 mod text_input;
@@ -287,6 +288,7 @@ fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Right Panel", hub::ToggleRightDock),
                 MenuItem::action("Files", hub::ToggleFiles),
                 MenuItem::action("Changes", hub::ToggleChanges),
+                MenuItem::action("Subagents", hub::ToggleSubagents),
                 MenuItem::separator(),
                 MenuItem::action("Session Tree", chat::ToggleTree),
                 MenuItem::action("Change Model", chat::ToggleModelPicker),

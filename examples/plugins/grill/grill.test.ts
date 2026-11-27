@@ -18,6 +18,7 @@ test("a question without choices offers 'Yes, as recommended' and a field", () =
 	assert.equal(form.description, "The release train leaves at 5.");
 	assert.deepEqual(form.options, [{ label: "Yes, as recommended", description: "Yes, ship Friday" }]);
 	assert.equal(form.allowText, true);
+	assert.deepEqual(form.selected, [0], "the recommendation is picked from the start");
 });
 
 test("with choices the recommended one comes first, marked", () => {
@@ -27,6 +28,7 @@ test("with choices the recommended one comes first, marked", () => {
 		form.options.map((option: any) => option.label),
 		["PostgreSQL (Recommended)", "SQLite", "MySQL"],
 	);
+	assert.deepEqual(form.selected, [0]);
 	// A recommendedChoice out of range falls back to the first choice.
 	assert.equal(formQuestion({ ...choice, recommendedChoice: 9 }, 0).options[0].label, "SQLite (Recommended)");
 });

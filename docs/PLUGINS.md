@@ -100,8 +100,9 @@ The [Secrets plugin](../examples/plugins/secrets) is a complete example: a pi to
 | `allowText` | adds a field for an answer of the user's own. With one choice allowed, typed text replaces the picked option; with `multiple` it comes next to them |
 | `required` | the form does not move on until the question has an answer. Default `true` |
 | `placeholder` | placeholder of the text field |
+| `selected` | indexes of options picked when the form opens, e.g. the recommended answer (a single-choice question keeps the first) |
 
-A form takes at most 20 questions. With more than one it shows a `2 / 4` counter and Back / Next; the last question has the submit button. Arrows move between the options, Space or a digit picks, Enter goes on, Left and Right change the question, Esc cancels.
+A form takes at most 20 questions. With more than one it shows a `2 / 4` counter and Back / Next; the last question has the submit button. Up and Down move between the options, Space or a digit picks, Enter goes on, Left and Right change the question (answered or not; they never send the form), Esc cancels. Expand next to Cancel shows all questions at once, one block each, with one submit button; there Up and Down run on into the next and previous question. The app remembers Expand for later forms in the same session.
 
 The answer has one entry per question, in the order they were asked:
 

@@ -36,6 +36,10 @@ function ask(callId, args) {
 			description: String(question?.details ?? "").trim() || undefined,
 			options: Array.isArray(question?.options) ? question.options : [],
 			multiple: question?.multiSelect === true,
+			// Options the agent marked "(Recommended)" are picked from the start.
+			selected: (Array.isArray(question?.options) ? question.options : [])
+				.map((option, index) => (/\(Recommended\)\s*$/i.test(String(option?.label ?? option)) ? index : -1))
+				.filter((index) => index >= 0),
 			// The user can always answer in their own words.
 			allowText: true,
 		}))

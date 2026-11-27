@@ -29,6 +29,9 @@ pub struct FormQuestion {
     /// The form does not move on until this question has an answer.
     pub required: bool,
     pub placeholder: SharedString,
+    /// Options picked when the form opens (`selected`), e.g. the recommended
+    /// answer. Ascending; at most one for a single-choice question.
+    pub preselected: Vec<usize>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -77,11 +80,12 @@ impl PromptForm {
                 ));
             }
             let allow_text = options.is_empty() || question["allowText"].as_bool().unwrap_or(false);
+            let multiple = !options.is_empty() && question["multiple"].as_bool().unwrap_or(false);
             questions.push(FormQuestion {
                 id: text(&question["id"]).unwrap_or_else(|| index.to_string().into()),
                 title,
                 description: text(&question["description"]),
-                multiple: !options.is_empty() && question["multiple"].as_bool().unwrap_or(false),
+                multiple,
                 allow_text,
                 required: question["required"].as_bool().unwrap_or(true),
                 placeholder: text(&question["placeholder"]).unwrap_or_else(|| {
@@ -91,6 +95,7 @@ impl PromptForm {
                         "Other".into()
                     }
                 }),
+                preselected: preselected(&question["selected"], options.len(), multiple),
                 options,
             });
         }
@@ -140,6 +145,25 @@ fn text(value: &Value) -> Option<SharedString> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(|text| SharedString::from(text.to_string()))
+}
+
+/// `selected`: option indexes to pick when the form opens. Out-of-range
+/// ones are dropped; a single-choice question keeps the first.
+fn preselected(value: &Value, options: usize, multiple: bool) -> Vec<usize> {
+    let mut picked: Vec<usize> = value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .filter_map(|index| usize::try_from(index).ok())
+        .filter(|index| *index < options)
+        .collect();
+    if !multiple {
+        picked.truncate(1);
+    }
+    picked.sort_unstable();
+    picked.dedup();
+    picked
 }
 
 /// An option is a string or `{ label, description? }`.
@@ -206,6 +230,30 @@ mod tests {
         let other = &form.questions[2];
         assert!(other.allow_text && !other.multiple);
         assert_eq!(other.placeholder, "Type your answer");
+    }
+
+    #[test]
+    fn options_can_be_picked_from_the_start() {
+        let form = PromptForm::parse(&json!({
+            "questions": [
+                { "title": "One", "options": ["A", "B", "C"], "selected": [2, 0] },
+                { "title": "Many", "options": ["A", "B", "C"], "multiple": true, "selected": [2, 0, 2, 7] },
+                { "title": "Text", "selected": [0] },
+                { "title": "None", "options": ["A"] },
+            ],
+        }))
+        .unwrap();
+        assert_eq!(
+            form.questions[0].preselected,
+            vec![2],
+            "one choice keeps the first given"
+        );
+        assert_eq!(form.questions[1].preselected, vec![0, 2]);
+        assert!(
+            form.questions[2].preselected.is_empty(),
+            "no options, nothing to pick"
+        );
+        assert!(form.questions[3].preselected.is_empty());
     }
 
     #[test]

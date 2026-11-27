@@ -29,6 +29,8 @@ export function formQuestion(question, index) {
 		title,
 		description: body || undefined,
 		options,
+		// The recommendation is picked from the start: Enter accepts it.
+		selected: [0],
 		allowText: true,
 		placeholder: "Or answer in your own words",
 	};

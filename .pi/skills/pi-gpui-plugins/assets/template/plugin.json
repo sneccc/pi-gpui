@@ -1,0 +1,20 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "0.1.0",
+  "protocol": 1,
+  "run": ["node", "plugin.mjs"],
+  "contributes": {
+    "commands": [
+      {
+        "id": "hello.insert",
+        "title": "Insert a greeting",
+        "icon": "sparkle",
+        "keybinding": "cmd-shift-h",
+        "placement": ["composer"]
+      }
+    ],
+    "piExtensions": ["./pi-extension.ts"],
+    "toolEvents": ["hello_ask_name"]
+  }
+}

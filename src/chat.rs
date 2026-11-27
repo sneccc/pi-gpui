@@ -362,6 +362,9 @@ enum Forking {
         text: String,
         /// Put the message back in the composer (a fork from that message).
         edit: bool,
+        /// Edit in this session instead of forking: move back to just before
+        /// the message (pi's `/tree`); sending it makes a new branch.
+        in_place: bool,
     },
     /// `fork` or `clone` was sent.
     Switching { edit: bool },
@@ -1005,6 +1008,7 @@ impl ChatView {
                 });
                 self.pending_prompt = true;
                 self.composer.update(cx, |composer, cx| composer.clear(cx));
+                self.sync_composer_history(cx);
                 // Sending is an explicit "show me the latest": re-enter follow mode.
                 self.list_state.reset(self.rows.len());
                 cx.emit(ChatEvent::Changed);
@@ -1357,6 +1361,7 @@ impl ChatView {
                 self.rows = rows;
                 self.needs_list_reset = true;
                 self.history_loaded = true;
+                self.sync_composer_history(cx);
                 self.request_stats();
             }
             "get_available_models" => {
@@ -1938,6 +1943,22 @@ impl ChatView {
         self.close_tree(window, cx);
     }
 
+    /// The composer's Up and Down history: this session's messages, oldest
+    /// first, each once in a row.
+    fn sync_composer_history(&mut self, cx: &mut Context<Self>) {
+        let mut history: Vec<SharedString> = Vec::new();
+        for row in &self.rows {
+            if let Row::User { text, .. } = row
+                && !text.trim().is_empty()
+                && history.last() != Some(text)
+            {
+                history.push(text.clone());
+            }
+        }
+        self.composer
+            .update(cx, |composer, _| composer.set_history(history));
+    }
+
     /// Forks are possible only while pi is idle and the transcript is final.
     fn can_fork(&self) -> bool {
         matches!(self.connection, Connection::Ready(_))
@@ -1953,6 +1974,31 @@ impl ChatView {
     /// From any other item, the new session keeps everything up to the end of
     /// that item's turn.
     fn fork_from_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.resolve_row(row, false, cx);
+    }
+
+    /// The pencil on a user message: edit it in this session. The session
+    /// goes back to just before the message, which returns to the composer;
+    /// sending makes a new branch and the old one stays in the tree.
+    fn edit_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        if !matches!(self.rows.get(row), Some(Row::User { .. })) {
+            return;
+        }
+        if pi::bridge_extension().is_none() {
+            let previous_len = self.rows.len();
+            self.push_notice(
+                Tone::Error,
+                "Editing a message needs the app's pi extension, which could not be written to the app data folder.".to_string(),
+            );
+            self.sync_list(previous_len, Vec::new());
+            cx.notify();
+            return;
+        }
+        self.resolve_row(row, true, cx);
+    }
+
+    /// Finds pi's entry for `row` (fork or edit), see `continue_fork`.
+    fn resolve_row(&mut self, row: usize, in_place: bool, cx: &mut Context<Self>) {
         if !self.can_fork() {
             return;
         }
@@ -1978,6 +2024,7 @@ impl ChatView {
                     from_end: user_rows.len() - 1 - position.unwrap_or_default(),
                     text: text.to_string(),
                     edit,
+                    in_place,
                 });
                 json!({ "type": "get_fork_messages" })
             }
@@ -2004,6 +2051,7 @@ impl ChatView {
             from_end,
             text,
             edit,
+            in_place,
         }) = self.forking.take()
         else {
             return;
@@ -2031,10 +2079,25 @@ impl ChatView {
         let Some(entry) = entry else {
             self.push_notice(
                 Tone::Error,
-                "Could not fork: pi does not list this message as a fork point.".to_string(),
+                if in_place {
+                    "Could not edit: pi does not list this message as an earlier message."
+                        .to_string()
+                } else {
+                    "Could not fork: pi does not list this message as a fork point.".to_string()
+                },
             );
             return;
         };
+        if in_place {
+            // As /tree does with a user message: back to before it, and the
+            // text into the composer once pi confirms (see "prompt" responses).
+            let message = format!("/{} {entry}", pi::NAVIGATE_COMMAND);
+            match self.send(json!({ "type": "prompt", "message": message })) {
+                Ok(id) => self.navigating = Some((id, Some(text))),
+                Err(error) => self.push_notice(Tone::Error, error),
+            }
+            return;
+        }
         self.forking = Some(Forking::Switching { edit });
         if let Err(error) = self.send(json!({ "type": "fork", "entryId": entry })) {
             self.forking = None;
@@ -2841,7 +2904,8 @@ impl ChatView {
             Row::User { at, .. } | Row::Assistant { at, .. } => *at,
             _ => None,
         };
-        let fork_tooltip = if matches!(row, Row::User { .. }) {
+        let is_user = matches!(row, Row::User { .. });
+        let fork_tooltip = if is_user {
             "Fork from this message"
         } else {
             "Fork after this turn"
@@ -2894,6 +2958,9 @@ impl ChatView {
                                 .left(px(-(ROW_GUTTER - 2.)))
                                 .opacity(0.)
                                 .group_hover(ROW_GROUP, |style| style.opacity(1.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
                                 .child(
                                     IconButton::new(("fork", index), IconName::Fork)
                                         .size(ButtonSize::Compact)
@@ -2902,7 +2969,20 @@ impl ChatView {
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.fork_from_row(index, cx)
                                         })),
-                                ),
+                                )
+                                .when(is_user, |this| {
+                                    this.child(
+                                        IconButton::new(("edit", index), IconName::Pencil)
+                                            .size(ButtonSize::Compact)
+                                            .icon_size(IconSize::XSmall)
+                                            .tooltip(Tooltip::text(
+                                                "Edit this message (a new branch here; the old one stays in the tree)",
+                                            ))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.edit_row(index, cx)
+                                            })),
+                                    )
+                                }),
                         )
                     }),
             )

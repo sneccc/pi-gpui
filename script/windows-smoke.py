@@ -55,6 +55,9 @@ def join_headless_desktop():
     os.environ["PI_GPUI_HEADLESS"] = "1"
 
 failures = []
+# Failure details can hold pi's screen (box drawing, spinners): never let
+# printing them crash on a pipe with Windows' default code page.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def check(name, ok, detail=""):

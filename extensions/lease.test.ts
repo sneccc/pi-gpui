@@ -70,6 +70,22 @@ for (const [name, lease] of [
 		assert.equal(leaseOf(file).pid, other.pid, "release must not remove another process's lease");
 	});
 
+	test(`${name}: takes the lease as soon as a new session's file appears, without any event`, async () => {
+		const file = session("");
+		const held = lease.holdSession(file, "a terminal pi");
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.equal(existsSync(`${file}.lease`), false);
+			writeFileSync(file, '{"type":"session"}\n');
+			const end = Date.now() + 2000;
+			while (!existsSync(`${file}.lease`) && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+			assert.equal(existsSync(`${file}.lease`), true, "no lease after the file appeared");
+			assert.equal(leaseOf(file).pid, process.pid);
+		} finally {
+			held.release();
+		}
+	});
+
 	test(`${name}: a live holder counts; dead, stale and missing ones do not`, () => {
 		const file = session();
 		assert.equal(lease.leaseHolder(file), undefined);

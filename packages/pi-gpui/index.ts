@@ -140,7 +140,6 @@ function watchSessionSharing(pi: any) {
 		lease?.release();
 		lease = undefined;
 	});
-	// A new session's file appears with its first message.
 	pi.on("agent_start", () => lease?.refresh());
 	pi.on("agent_settled", () => lease?.refresh());
 }
@@ -304,6 +303,9 @@ function processAlive(pid: number): boolean {
 export function holdSession(session: string, surface: string, extra: Partial<Lease> = {}) {
 	const path = `${session}.lease`;
 	const refresh = (): boolean => {
+		// Cheap when called often (every saved message): our own fresh lease stays.
+		const current = readLease(session);
+		if (current?.pid === process.pid && Date.now() - (current.updatedAt ?? 0) < LEASE_REFRESH_MS / 2) return true;
 		if (!fs.existsSync(session) || leaseHolder(session)) return false;
 		const lease: Lease = {
 			pid: process.pid,
@@ -326,8 +328,17 @@ export function holdSession(session: string, surface: string, extra: Partial<Lea
 	};
 	const timer = setInterval(refresh, LEASE_REFRESH_MS);
 	timer.unref?.();
+	// A new session's file appears during its first run, at a moment no event
+	// marks reliably: look for it until it is there, then take the lease at once.
+	const appear = setInterval(() => {
+		if (!fs.existsSync(session)) return;
+		clearInterval(appear);
+		refresh();
+	}, 250);
+	appear.unref?.();
 	const release = () => {
 		clearInterval(timer);
+		clearInterval(appear);
 		process.off("exit", release);
 		if (readLease(session)?.pid !== process.pid) return;
 		try {

@@ -1,117 +1,99 @@
 ---
 name: pi-gpui-plugins
-description: Build, install, debug and test Pi GPUI app plugins (buttons, status items, forms and text fields in tool calls, live views, session control) and the pi extensions they ship. Use when making or changing a plugin, when the agent should show or ask something in the app's UI, or when a plugin does not load or respond.
+description: Guide to creating Pi GPUI app plugins (buttons, status items, forms and text fields in tool calls, live views, session control) and the pi extensions they ship, with a tested template, recipes, headless testing and troubleshooting. Use when making, changing or debugging a plugin, when the agent should show or ask something in the app's UI, and whenever you learn something new about plugins (then update this skill).
 ---
 
-# Pi GPUI plugins
+# Creating Pi GPUI plugins
 
-`docs/PLUGINS.md` is the source of truth for the protocol; read the section you
-need before writing code. This skill is the short version plus what is not
-written there: Windows details, the pitfalls, and how to test headless.
+A living guide. It grows with every plugin we build: see "Keep this guide
+alive" at the end, and follow it in every session that touches plugins.
 
-## The model in one picture
+`docs/PLUGINS.md` (repo root) is the reference for the protocol. This guide is
+the practical part: how to build, test and debug, what is not written there,
+and what we learned the hard way.
+
+| Read | When |
+|---|---|
+| this file | always: the model and the steps |
+| `references/recipes.md` | building a feature: one recipe per need |
+| `references/testing.md` | testing headless, adding a permanent check |
+| `references/troubleshooting.md` | something does not load, show or answer |
+| `references/platforms.md` | Windows, macOS, Linux differences |
+| `references/lessons.md` | before you start (recent lessons), and to record new ones |
+| `assets/template/` | the starting point: a tested plugin |
+
+## How a plugin fits in
 
 ```
 pi (agent) --calls a tool--> Pi GPUI app --tool.start / view.open--> plugin (own process)
                              app draws   <--prompt.form / view.frame / status.set / composer.insert--
-pi <--tool result-- the plugin's pi extension (it waited for the plugin's answer, e.g. via a file)
+pi <--tool result-- the plugin's pi extension (waits for the plugin's answer, e.g. a file)
 ```
 
-- pi never talks to the plugin. The app sits between them.
-- A plugin is a folder with `plugin.json` and any program. JSON lines over
-  stdin/stdout. It can only send the messages in docs/PLUGINS.md; it cannot
-  run code in the app, add panels or change the layout.
-- The agent side is a normal pi extension the plugin ships
-  (`contributes.piExtensions`); the app loads it into every pi it starts.
+- A plugin is a folder: `plugin.json` plus a program in any language. The app
+  starts it and talks JSON lines over stdin/stdout.
+- pi never talks to the plugin; the app is in the middle. When the agent must
+  take part, the plugin ships a pi extension (`contributes.piExtensions`) that
+  the app loads into every pi it starts.
+- A plugin can only send the messages in docs/PLUGINS.md. It cannot run code in
+  the app, add panels or change the layout. New kinds of UI need new protocol
+  messages in the app (Rust): note them in `references/lessons.md` as wishes.
 
-| Need | Use |
-|---|---|
-| A button or shortcut that does something | `contributes.commands` + `command.run` |
-| Text into the message box | `composer.insert` / `composer.setText` |
-| A status item in the title bar | `status.set` / `status.clear` |
-| Ask the user while a tool runs | pi tool + `toolEvents` + `prompt.input` (one field, `secret` for keys) or `prompt.form` (many questions) |
-| Show something live in a tool call | pi tool + `toolViews` + `view.frame` (JPEG/PNG, base64) |
-| Drive sessions (open, prompt, follow events) | `"permissions": ["sessions"]` + `sessions.*` |
-| User settings | `contributes.settings` (+ `settings.changed`) |
-| Links from a tool call to other sessions | `details.piGpui.sessionLinks` or `contributes.sessionLinks` |
+## Build a plugin, step by step
 
-## Start from the template
+1. **Pick the pieces.** Find your need in `references/recipes.md` (button, text
+   into the message box, status, field or form in a tool call, live view,
+   sessions, settings).
+2. **Copy the template.** `assets/template/` has a button with a shortcut, a pi
+   tool, and a field in that tool's call whose answer goes back to pi. Copy the
+   folder, then rename: `id` in plugin.json, every command id
+   (`<id>.<name>`), the tool name (unique: pi refuses duplicates), the temp
+   folder name in both program files.
+3. **Write the manifest.** `protocol: 1`, `run` (prefer `["node", "plugin.mjs"]`:
+   it starts on every OS), `contributes`, `permissions` only if needed.
+4. **Write the program.** Read stdin lines; react to `command.run`,
+   `tool.start`, `view.open`, `prompt.result`; send messages as one JSON line
+   each. Nothing else on stdout. Exit when stdin closes.
+5. **Write the pi tool** (if the agent takes part). It waits for the plugin's
+   result on a file watch, returns it, and deletes the file.
+6. **Test headless** with a scripted fake model (no tokens, no windows):
+   `references/testing.md`. Check the app log and the session file.
+7. **Try it in the real app.** Copy the folder into the plugins folder
+   (`references/platforms.md`), restart the app, and with a real model ask for
+   something that makes it call your tool.
+8. **Keep it.** Add a smoke check if the plugin matters, and record what you
+   learned (next section).
 
-`assets/template/` is a tested plugin with the three most used pieces: a
-composer button with a shortcut, a pi tool, and a text field in its call that
-returns the answer to the tool. Copy it, rename the id (every command id starts
-with `<plugin id>.`) and the tool, then change the behaviour.
+## Rules worth knowing before you start
 
-Bigger examples in the repo: `examples/plugins/ask` (forms), `secrets`
-(masked field, value never reaches pi), `doom` (live view with keyboard).
+- Idle costs nothing: wait on events (stdin, file watches), never poll in a
+  loop; send status and frames only when they change; set up heavy things lazily.
+- Write handoff files in one step (`.tmp` then rename), sanitize `callId` for
+  file names, delete them after reading.
+- A prompt or form also closes when its tool call ends: `prompt.result` comes
+  with `closed: true` and nobody waits. Ignore it.
+- The app reads plugins once at start: restart it after changes. pi extensions
+  load when a pi starts: also reload open sessions (Ctrl+Shift+R / ⌘⇧R).
+- Log with `{"method":"log","params":{"message":"..."}}`; never print other
+  things on stdout.
 
-## Rules that are easy to get wrong
+## Keep this guide alive
 
-- **Answer handoff:** the plugin gets the user's answer, but the pi tool must
-  return it. Write `<tmp>/<plugin>/<callId>.json` in one step (write `.tmp`,
-  then rename), let the tool wait on a file watch (plus a slow poll as a safety
-  net), and delete the file after reading. Sanitize `callId` for file names.
-- **Prompts close by themselves** when their tool call ends: then
-  `prompt.result` has `closed: true` and nobody waits. Ignore it.
-- **pi refuses two extensions with the same tool name.** Pick unique tool names.
-- **Commands show before the plugin runs**; the process starts on first use
-  (`activation: "lazy"`). Use `"startup"` only for plugins that serve something.
-- **Exit when stdin closes.** With `readline` on stdin, node exits by itself.
-- **Cost nothing while idle:** wait on events (stdin, file watches), never poll
-  in a loop; send status/frames only on change; start fast, set up heavy things
-  lazily.
-- **Changes need a restart:** the app reads plugins once at start (no watcher).
-  pi extensions load when a pi starts, so also restart open sessions (⌘⇧R /
-  Ctrl+Shift+R) after changing `pi-extension.ts`.
-- **Logs:** send `{"method":"log","params":{"message":"..."}}` to write into the
-  app log. stdout is the protocol: never print anything else there (the app
-  logs `plugin X wrote non-JSON`). stderr's last line is shown if it crashes.
+This skill must get better every time we work on plugins. In any session that
+builds, debugs or reads about plugins:
 
-## Windows specifics
-
-- Plugins folder: `%HOME%\.config\pi-gpui\plugins\<id>` (`%USERPROFILE%` when
-  `HOME` is unset; `XDG_CONFIG_HOME` wins if set). macOS:
-  `~/Library/Application Support/pi-gpui/plugins`, Linux: `~/.config/pi-gpui/plugins`.
-- `run`: plain names are found on `PATH` with `.exe`/`.cmd`/`.bat`, so
-  `["node", "plugin.mjs"]` works everywhere. **`["./run.sh"]` does not start on
-  Windows** (the DOOM example has this problem). Prefer node, or a `.cmd`.
-- Keybindings: write `cmd-shift-h`; on Windows and Linux it becomes Ctrl+Shift+H.
-- Node's home folder is `USERPROFILE`, its temp folder `%TEMP%`.
-- Paths in tool results are rendered as Markdown, which eats `\` before
-  punctuation (`\.pi` shows as `.pi`). Put paths in backticks or details.
-
-## Test headless (no windows, no tokens)
-
-Tools in `script/debug/` (see its README). The app runs on a hidden desktop in
-a sandbox; a scripted fake model makes pi call your tool, so no real model is
-needed.
-
-```sh
-# steps.json: what the model does, one reply per step
-#   [{"tool": "hello_ask_name", "args": {"question": "Name?"}}, {"echo": "GOT: "}]
-python -I script/debug/app.py start --fresh --plugin path/to/plugin --scripted steps.json "C:\some\project"
-python -I script/debug/app.py do "type hi" "key enter" "wait 1500" shot      # .scratch/shots/<time>.png
-python -I script/debug/app.py do "type Daniel" "key enter"                   # answer the field like a user
-python -I script/debug/app.py stop
-```
-
-- The app log is `.scratch/headless/app.log`: look for `loaded N plugin(s): <id>`,
-  `started plugin <id>`, `plugin <id> exited`, `plugin not loaded: <reason>`.
-- The `{"echo": "GOT: "}` step makes the model repeat the tool's result, so the
-  session file (`.scratch/headless/agent/sessions/**.jsonl`) proves the answer
-  reached pi.
-- Keys go to whatever has focus: an open field or form takes the keyboard.
-- `script/debug/plugin-gallery.py` renders the example plugins into one PNG;
-  add a scenario there to picture yours.
-- For a permanent check, copy `ask_check` in `script/windows-smoke.py`
-  (`wait_for_form` waits until a form is drawn) and add it to `CHECKS`.
-
-## Checklist for a new plugin
-
-1. `plugin.json`: `id`, `protocol: 1`, `run`, `contributes`; ids prefixed.
-2. Program: read stdin lines, answer `tool.start` / `command.run` / `prompt.result`.
-3. pi extension (if the agent needs it): a tool that waits for the plugin.
-4. Install into the sandbox with `app.py start --plugin`, drive it, check the log
-   and the session file. Then try it in the real app (copy to the plugins folder,
-   restart the app).
-5. Clean up: no leftover answer files, the process exits with stdin.
+1. **Before starting**, skim `references/lessons.md`; it holds the newest tips.
+2. **When you learn something** (a pitfall, a fix, a faster way to test, a
+   protocol detail missing from docs/PLUGINS.md, a platform difference), add a
+   dated entry to `references/lessons.md` right away, in the same session.
+   Each entry says what, why, and **how it was verified** (a test that ran, a
+   screenshot, the code line). Unverified ideas go under "Open questions".
+3. **Put lasting knowledge where readers look**: move a lesson into the
+   recipe, testing, troubleshooting or platform page it belongs to, and mark
+   it "moved to …" in the log. Keep this file short; it is the map.
+4. **Fix wrong advice** as soon as it is found: change it, and note the
+   correction in the log. Never leave two contradicting statements.
+5. **Keep the template working.** After changing `assets/template/`, run
+   `python -I script/windows-smoke.py --only template`. When docs/PLUGINS.md
+   or the protocol changes, update the recipes in the same commit.
+6. **Commit skill changes** with `docs(plugins): ...` so they reach the next session.

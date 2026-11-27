@@ -465,6 +465,9 @@ pub struct ChatView {
     _frames_subscription: Subscription,
     /// Fields of plugin prompts open in this chat's tool calls.
     prompt_fields: Vec<plugin_prompt::PromptField>,
+    /// Plugin forms show all questions at once; the user's last choice, so the
+    /// next form (a new round) opens the same way.
+    forms_expanded: bool,
     /// Move focus to the newest prompt on the next render.
     focus_prompt: bool,
 }
@@ -595,6 +598,7 @@ impl ChatView {
             focused_view: None,
             _frames_subscription: frames_subscription,
             prompt_fields: Vec::new(),
+            forms_expanded: false,
             focus_prompt: false,
         };
         this.start_process(cx);

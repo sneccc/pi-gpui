@@ -97,7 +97,7 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> PromptBody {
         match &prompt.form {
-            Some(form) => PromptBody::Form(FormState::new(form.clone(), cx)),
+            Some(form) => PromptBody::Form(FormState::new(form.clone(), self.forms_expanded, cx)),
             None => PromptBody::Input(cx.new(|cx| {
                 let mut input = TextInput::single_line(prompt.placeholder.clone(), cx);
                 input.set_masked(prompt.secret, cx);

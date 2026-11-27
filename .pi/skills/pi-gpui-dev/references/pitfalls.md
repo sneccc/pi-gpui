@@ -40,6 +40,11 @@
 
 ## Repo rules
 
+- **The clipboard is the user's.** Anything that copies (the app's Copy
+  buttons, a test probe) replaces what Daniel had. Save it first
+  (`Get-Clipboard -Raw`) and put it back (`Set-Clipboard -Value $input`), as
+  `subagents_check` does. On 2026-11-27 a probe overwrote his clipboard unsaved.
+
 - Never kill processes you did not start (Daniel's Pi GPUI, his terminal pis).
 - Plugins are read once at app start; the bridge is rewritten from the exe at
   start: restart the app (and reload sessions) after changing them.

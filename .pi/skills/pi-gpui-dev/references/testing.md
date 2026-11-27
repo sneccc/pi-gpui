@@ -48,6 +48,9 @@ with its time. `SMOKE_KEEP=1` keeps a failed run's sandbox.
 - Wait for events (a file, a window, an answer), never fixed sleeps; when a
   wait is unavoidable, explain why in a comment.
 
+Automation commands now include `rclick X Y` (Windows): right button, for
+context menus.
+
 ## Debugging by hand
 
 `script/debug/app.py`: `start [--fresh] [--show] [--sandbox-pi] [--plugin DIR] [--scripted steps.json] [folder]`,

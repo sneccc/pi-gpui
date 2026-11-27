@@ -834,6 +834,24 @@ def subagents_check(sandbox):
         driver.settle(sandbox, quiet=0.5)
         back = main_area("subagents-back")
         check("subagents: Main returns to the session", back == chat)
+
+        # Right-click the session in the sidebar: Copy session trace (the 4th
+        # menu item). It overwrites the clipboard: keep the user's text.
+        saved = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+                               capture_output=True, text=True).stdout
+        traces = os.path.join(home, ".cache", "pi-gpui", "traces")
+        try:
+            driver.send("move 150 121", "rclick 150 121", "wait 400", "move 230 225", "click 230 225")
+            written = wait_for(lambda: os.path.isdir(traces) and os.listdir(traces), 10)
+            trace = open(os.path.join(traces, written[0]), encoding="utf-8").read() if written else ""
+            check("subagents: right-click > Copy session trace writes the trace", bool(written))
+            check("subagents: ... with the session file, the fleet and the subagent's transcript",
+                  all(part in trace for part in ("## Session file (JSONL)", "### Fleet", "auth-scout",
+                                                 "Found **src/auth.rs**.", "- subagents published: 1")),
+                  trace[:600])
+        finally:
+            subprocess.run(["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value $input"],
+                           input=saved, text=True, capture_output=True)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)

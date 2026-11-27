@@ -137,7 +137,23 @@ MUTATIONS += [
     ),
 ]
 
+MUTATIONS += [
+    (
+        "the session trace leaves out the subagents' transcripts",
+        "src/trace.rs",
+        "            for (name, text) in &files.agents {",
+        "            for (name, text) in files.agents.iter().take(0) {",
+    ),
+]
+
 E2E_MUTATIONS = [
+    (
+        "right-clicking a session does not open its menu",
+        "src/hub.rs",
+        "                        this.session_menu = Some(SessionMenu {\n                            row: row.clone(),\n                            position: event.position,\n                        });",
+        "                        let _ = (&row, event);",
+        "subagents",
+    ),
     (
         "picking a subagent does not change the main area",
         "src/subagents.rs",

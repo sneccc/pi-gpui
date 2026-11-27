@@ -1,5 +1,6 @@
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, ElementId, SharedString, Window, div, prelude::*, px,
+    AnyElement, AnyView, App, ClickEvent, ElementId, Hsla, SharedString, Window, div, prelude::*,
+    px,
 };
 
 use super::label::{Label, LabelSize};
@@ -23,6 +24,7 @@ pub struct ListItem {
     children: Vec<AnyElement>,
     on_click: Option<ClickHandler>,
     tooltip: Option<TooltipBuilder>,
+    tint: Option<Hsla>,
 }
 
 impl ListItem {
@@ -37,7 +39,14 @@ impl ListItem {
             children: Vec::new(),
             on_click: None,
             tooltip: None,
+            tint: None,
         }
+    }
+
+    /// A background for a row that needs attention (selected rows keep theirs).
+    pub fn tint(mut self, color: Hsla) -> Self {
+        self.tint = Some(color);
+        self
     }
 
     pub fn indent_level(mut self, level: usize) -> Self {
@@ -104,6 +113,9 @@ impl RenderOnce for ListItem {
             .pr(px(4.))
             .rounded(px(5.))
             .when(self.selected, |this| this.bg(colors.ghost_element_selected))
+            .when_some(self.tint.filter(|_| !self.selected), |this, tint| {
+                this.bg(tint)
+            })
             .when(!self.selected, |this| {
                 this.hover(|style| style.bg(colors.ghost_element_hover))
             })

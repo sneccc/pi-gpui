@@ -4,7 +4,7 @@
 //! Every opened session owns its own pi process. Switching between them never
 //! stops work; closing the app closes stdin of each process.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -74,6 +74,8 @@ const SETTINGS_FIELD_CONTEXT: &str = "SettingsField";
 /// Height of the strip of open session tabs above the chat.
 const TAB_BAR_HEIGHT: f32 = 34.;
 const SESSIONS_PER_WORKSPACE: usize = 20;
+/// How often the sidebar looks for sessions a terminal pi holds.
+const HELD_SESSIONS_POLL: std::time::Duration = std::time::Duration::from_secs(3);
 /// How long the first sessions wait for plugin manifests to be read.
 const PLUGIN_LOAD_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Our own title bar replaces the native one (see `main.rs`). The traffic
@@ -343,6 +345,9 @@ pub struct HubView {
     renaming: Option<Renaming>,
     /// Sessions being renamed through a short-lived pi process.
     renaming_sessions: HashSet<PathBuf>,
+    /// Listed sessions another live pi holds (a terminal pi): their rows are
+    /// tinted red. Rebuilt from the lease files every few seconds.
+    held_sessions: HashMap<PathBuf, String>,
     /// ⌘ is held: the tabs show ⌘1…⌘9.
     command_held: bool,
     /// The Settings page replaces the main area while open.
@@ -378,6 +383,7 @@ pub struct HubView {
     _check_task: Task<()>,
     _prompt_task: Task<()>,
     _open_task: Task<()>,
+    _held_task: Task<()>,
     /// Checking pi before every open session gets a fresh pi.
     reloading_sessions: bool,
     _reload_task: Task<()>,
@@ -512,6 +518,7 @@ impl HubView {
             app_menu: None,
             renaming: None,
             renaming_sessions: HashSet::new(),
+            held_sessions: HashMap::new(),
             command_held: false,
             settings_page: None,
             search: None,
@@ -536,6 +543,7 @@ impl HubView {
             _check_task: Task::ready(()),
             _prompt_task: Task::ready(()),
             _open_task: Task::ready(()),
+            _held_task: Task::ready(()),
             reloading_sessions: false,
             _reload_task: Task::ready(()),
             _save_task: Task::ready(()),
@@ -573,6 +581,7 @@ impl HubView {
         for path in expanded {
             this.load_sessions(&path, cx);
         }
+        this.watch_held_sessions(cx);
         this.check_installation(cx);
         let updated_from =
             AutoUpdater::global(cx).update(cx, |updater, _| updater.take_updated_from());
@@ -962,6 +971,55 @@ impl HubView {
         }
         self.save(cx);
         cx.notify();
+    }
+
+    /// Every few seconds: which listed sessions does another live pi hold?
+    /// One small file check per row; the sidebar redraws only on a change.
+    fn watch_held_sessions(&mut self, cx: &mut Context<Self>) {
+        self._held_task = cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(files) = this.update(cx, |this, cx| this.listed_session_files(cx)) else {
+                    return;
+                };
+                let held = cx
+                    .background_spawn(async move {
+                        files
+                            .into_iter()
+                            .filter_map(|file| {
+                                let holder = sessions::foreign_lease_holder(&file)?;
+                                Some((file, holder))
+                            })
+                            .collect::<HashMap<_, _>>()
+                    })
+                    .await;
+                let updated = this.update(cx, |this, cx| {
+                    if this.held_sessions != held {
+                        this.held_sessions = held;
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
+                    return;
+                }
+                cx.background_executor().timer(HELD_SESSIONS_POLL).await;
+            }
+        });
+    }
+
+    /// Session files shown in the sidebar that this app does not have open.
+    fn listed_session_files(&self, cx: &App) -> Vec<PathBuf> {
+        self.workspaces
+            .iter()
+            .filter(|entry| entry.expanded)
+            .flat_map(|entry| {
+                entry.sessions.iter().filter_map(|summary| {
+                    let open = entry.chats.iter().any(|chat| {
+                        chat.view.read(cx).session_file() == Some(summary.path.as_path())
+                    });
+                    (!open).then(|| summary.path.clone())
+                })
+            })
+            .collect()
     }
 
     /// The project row's reload button: reads the project's pi sessions again,
@@ -2605,7 +2663,18 @@ impl HubView {
             self.opening_session.as_ref() == Some(file) || self.renaming_sessions.contains(file)
         });
 
-        let marker = if is_running || is_busy {
+        // Another live pi (a terminal pi) has this session open: opening it
+        // here too would mix up its history, so the row says so.
+        let held_by = row
+            .file
+            .as_ref()
+            .filter(|_| row.open_chat.is_none())
+            .and_then(|file| self.held_sessions.get(file))
+            .cloned();
+
+        let marker = if held_by.is_some() {
+            Indicator::dot(Color::Error).into_any_element()
+        } else if is_running || is_busy {
             Spinner::new()
                 .size(IconSize::XSmall)
                 .color(if is_running {
@@ -2744,7 +2813,13 @@ impl HubView {
             .toggle_state(is_active)
             .start_slot(div().w(px(12.)).flex().justify_center().child(marker))
             .child(title)
-            .on_click(on_click);
+            .on_click(on_click)
+            .when_some(held_by, |item, holder| {
+                item.tint(cx.theme().colors.error_background)
+                    .tooltip(Tooltip::text(format!(
+                        "Open in {holder}. Close it there, or type /gpui there to move it here."
+                    )))
+            });
         item.when_some(row.age.clone(), |item, age| {
             item.end_slot(
                 Label::new(age)

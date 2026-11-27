@@ -6,6 +6,23 @@ them "moved to …". Log corrections of wrong advice here too.
 
 ## Entries
 
+- **2026-11-27: the Subagents panel reads files pi-durable-subagents writes.**
+  The extension keeps its fleet inside the parent pi (SQLite with chord
+  deltas, an internal format), and its overview only runs in a terminal. A
+  publisher added to Daniel's checkout (`~/source/pi-durable-subagents`,
+  branch `pi-gpui-subagents-panel`, `src/gpui.ts`) writes
+  `<app cache>/subagents/<session id>/fleet.json` and `agents/<id>.json`
+  when `PI_GPUI_SUBAGENTS_DIR` is set (the app sets it in `pi::spawn_pi`).
+  The panel polls two file times while shown. Verified: the extension's own
+  tests (2 new) in a scratch copy, `--only subagents`, 2 mutations caught.
+  The extension's suite has 4 failures on Windows that exist without the change.
+- **2026-11-27: a truncating Label in a column (v_flex) shrinks to "…".**
+  Wrap each line in `h_flex().w_full()`, as `ListItem` does. Verified with a
+  headless screenshot before and after (dropping the scroll container did not help).
+- **2026-11-27: never `npm ci` in a checkout pi loads extensions from** while
+  pi runs: it rebuilds the node_modules those pis use. Test a copy in
+  `.scratch` (tar without node_modules, then `npm ci`, ~13 s).
+
 - **2026-11-27: three smoke groups ran pi with the user's real agent folder**
   (main, handover, lease; also controls' env). Each test pi loaded all of
   Daniel's extensions, started slowly under load (the lease group flaked)

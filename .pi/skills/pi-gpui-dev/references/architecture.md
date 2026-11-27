@@ -39,6 +39,7 @@ terminal pi (with the pi-gpui package) ── /gpui hands its session to the app
 | `automation.rs` + `automation/` | `PI_GPUI_AUTOMATION`: keys, clicks, shots for tests |
 | `settings.rs` | settings.json, watched and applied live |
 | `test_support.rs` | `TempDir` for unit tests |
+| `subagents.rs` | the Subagents panel (right dock, Ctrl+Alt+A) and a subagent's conversation in the main area; reads what pi-durable-subagents publishes |
 
 ## Where state lives
 

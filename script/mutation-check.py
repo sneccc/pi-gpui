@@ -13,6 +13,7 @@ and writes the original text back byte for byte.
 import os
 import subprocess
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BS = chr(92)
@@ -325,13 +326,16 @@ def main():
         wanted = sys.argv[sys.argv.index("--only") + 1].lower()
         mutations = [m for m in mutations if wanted in m[0].lower()]
     survived = []
-    for name, file, original, mutated, *smoke_only in mutations:
+    started_all = time.time()
+    for number, (name, file, original, mutated, *smoke_only) in enumerate(mutations, 1):
+        started = time.time()
+        print(f"[{number}/{len(mutations)}] {name} ...", end=" ", flush=True)
         path = os.path.join(ROOT, file)
         text = read(path)
         crlf = "\r\n" in text
         needle = original.replace("\n", "\r\n") if crlf else original
         if text.count(needle) != 1:
-            print(f"SKIP   {name}: pattern not found exactly once in {file}")
+            print(f"SKIP: pattern not found exactly once in {file}")
             survived.append(name + " (pattern missing)")
             continue
         replacement = mutated.replace("\n", "\r\n") if crlf else mutated
@@ -346,20 +350,20 @@ def main():
                 subprocess.run(["cargo", "build", "--release"], cwd=ROOT, capture_output=True)
         compiled = "could not compile" not in output
         if passed:
-            print(f"SURVIVED {name}  <-- the tests did not notice")
+            print(f"SURVIVED ({time.time() - started:.0f} s)  <-- the tests did not notice")
             survived.append(name)
         elif not compiled:
-            print(f"BROKEN {name}: the mutation does not compile (fix the script)")
+            print(f"BROKEN ({time.time() - started:.0f} s): the mutation does not compile (fix the script)")
             survived.append(name + " (does not compile)")
         else:
-            print(f"caught {name}")
+            print(f"caught ({time.time() - started:.0f} s)")
     print()
     if survived:
         print(f"{len(survived)} problem(s):")
         for name in survived:
             print("  -", name)
         sys.exit(1)
-    print(f"all {len(mutations)} mutations were caught")
+    print(f"all {len(mutations)} mutations were caught in {time.time() - started_all:.0f} s")
 
 
 if __name__ == "__main__":

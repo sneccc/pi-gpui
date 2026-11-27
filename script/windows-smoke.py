@@ -1492,12 +1492,35 @@ def main():
                     if VERBOSE or line.startswith("FAIL"):
                         print(line)
     finally:
+        if failures:
+            print_app_log_problems(sandbox)
         if os.environ.get("SMOKE_KEEP") and failures:
             print(f"kept the sandbox for inspection: {sandbox}")
         else:
             shutil.rmtree(sandbox, ignore_errors=True)
     print(f"\n{len(names)} check group(s) in {time.time() - started:.1f} s")
     report()
+
+
+PROBLEM = re.compile(r"error|fail|panic|no api key|warn|\] ", re.IGNORECASE)
+
+
+def print_app_log_problems(sandbox, lines=12):
+    """After a failure: the problems each app wrote to its app log
+    (src/app_log.rs; pi's and plugins' stderr included), named by the
+    project the app was started in, so a flake explains itself."""
+    for home in sorted(os.listdir(sandbox)):
+        path = os.path.join(sandbox, home, ".cache", "pi-gpui", "logs", "pi-gpui.log")
+        if not os.path.isfile(path):
+            continue
+        text = open(path, encoding="utf-8", errors="replace").read().splitlines()
+        problems = [line for line in text[1:] if line[24:].strip() and PROBLEM.search(line[24:])]
+        if problems:
+            started = re.search(r"args \[(.*)\]", text[0]) if text else None
+            where = os.path.basename(started.group(1).strip('"').replace("\\\\", "\\")) if started and started.group(1) else home
+            print(f"app log of {home} ({where}):")
+            for line in problems[-lines:]:
+                print("   ", line[11:][:220])
 
 
 def report():

@@ -83,16 +83,20 @@ them "moved to …". Log corrections of wrong advice here too.
 ## Open questions
 
 - **A first message sent right after a session opens can fail** ("No API key
-  found", model "unknown") when pi has not registered extension providers
-  yet. Seen with the fake models under heavy load: the template group failed
-  1 of 4 full runs, never alone (5 of 5). Does the app need to wait for pi to
-  report a model (get_state) before sending, or re-query state? Not checked.
+  found", model "unknown"). Seen with the fake models under heavy load
+  (template, grill, ask groups; about 1 in 5 full runs before 2026-11-27,
+  0 in 9 after). **Ruled out (2026-11-27):** sending early. A prompt written
+  to pi's stdin before pi has said anything is queued and answered, with
+  get_state already reporting faux/faux-1 (`.scratch/probes/early_prompt.py 0`,
+  3 of 3). Next time it fails, the smoke script prints that app's log
+  problems, including pi's own stderr (`[node PID] ...`). Read those first.
 
-- A message sent about 2 s after a session opened failed with "No API key
-  found" and model "unknown": the scripted-model extension had probably not
-  registered its provider yet. Seen once in 5 runs (debug app, sandboxed pi).
-  Could a user hit it by typing right after opening a session? Does the app
-  wait for pi to be ready (get_state with a model) before sending? Not checked.
+- **The app log** (`%USERPROFILE%\.cache\pi-gpui\logs\pi-gpui.log`,
+  `src/app_log.rs`) gets everything the app writes to stderr, plus every pi's
+  and plugin's stderr (`[name pid] line`, from `jsonl.rs`), timed. After Daniel
+  tests something, read its end first. Verified: the smoke main group checks
+  that it is written and timed. A made-up log run through
+  `print_app_log_problems` printed only the problem lines.
 
 - Why does "a second click restores the window exactly" still flake under
   load? Idea: the hover highlight fades over time; compare after a `move`

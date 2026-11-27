@@ -181,6 +181,17 @@ HIT = {1: "client", 2: "caption", 8: "minimize", 9: "maximize", 20: "close"}
 user32.SendMessageW.restype = ctypes.c_ssize_t
 user32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.GetClassLongPtrW.restype = ctypes.c_size_t
+user32.GetClassLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
+
+
+def window_icon(hwnd):
+    """The icon the taskbar shows: the window's own (WM_GETICON) or its class's."""
+    for kind in (1, 0, 2):  # ICON_BIG, ICON_SMALL, ICON_SMALL2
+        icon = user32.SendMessageW(hwnd, 0x007F, kind, 0)  # WM_GETICON
+        if icon:
+            return icon
+    return user32.GetClassLongPtrW(hwnd, -14) or user32.GetClassLongPtrW(hwnd, -34)  # GCLP_HICON(SM)
 
 
 def client_width(hwnd):
@@ -555,6 +566,8 @@ def main():
                     and not w[0].startswith("UAC_InputIndicator")]
         check("no console or stray window appears", not consoles, consoles)
         check("the app's own window is visible", any(w[0] == "Zed::Window" for w in visible_windows({app.pid})))
+        hwnd = app_window(app.pid)
+        check("the window has the app icon (taskbar, Alt+Tab)", bool(hwnd and window_icon(hwnd)))
 
         # --- closing a session stops exactly its pi, and leaves the other
         answer = driver.send("key ctrl-w", "wait 300")

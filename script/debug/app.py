@@ -246,7 +246,20 @@ def status(_):
     print(f"headless {state().get('headless')}\n" + "\n".join(lines) + "\nwindows:")
     for hwnd, owner, visible, cls, title in windows_of(set(pids)):
         if visible:
-            print(f"  {hwnd:#x} pid {owner} {cls!r} {title!r}")
+            print(f"  {hwnd:#x} pid {owner} {cls!r} {title!r} icon={'yes' if window_icon(hwnd) else 'no'}")
+
+
+user32.GetClassLongPtrW.restype = ctypes.c_size_t
+user32.GetClassLongPtrW.argtypes = [wt.HWND, ctypes.c_int]
+
+
+def window_icon(hwnd):
+    """The icon the taskbar shows: the window's own (WM_GETICON) or its class's."""
+    for kind in (1, 0, 2):  # ICON_BIG, ICON_SMALL, ICON_SMALL2
+        icon = user32.SendMessageW(hwnd, 0x007F, kind, 0)  # WM_GETICON
+        if icon:
+            return icon
+    return user32.GetClassLongPtrW(hwnd, -14) or user32.GetClassLongPtrW(hwnd, -34)  # GCLP_HICON, GCLP_HICONSM
 
 
 def client_point(hwnd, x, y):

@@ -28,11 +28,14 @@ struct NSPoint {
 /// corner, as AppKit would. The event never passes through the system, so the
 /// real pointer stays where it is.
 unsafe fn send_mouse(target: NativeWindow, event: MouseEvent, x: f64, y: f64) {
-    // NSEventTypeMouseMoved, NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp.
+    // NSEventTypeMouseMoved, NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp,
+    // NSEventTypeRightMouseDown, NSEventTypeRightMouseUp.
     let (kind, clicks): (usize, isize) = match event {
         MouseEvent::Move => (5, 0),
         MouseEvent::Down => (1, 1),
         MouseEvent::Up => (2, 1),
+        MouseEvent::RightDown => (3, 1),
+        MouseEvent::RightUp => (4, 1),
     };
     // AppKit counts from the bottom left corner.
     let location = NSPoint {
@@ -60,6 +63,8 @@ unsafe fn send_mouse(target: NativeWindow, event: MouseEvent, x: f64, y: f64) {
             MouseEvent::Move => msg_send![target.view, mouseMoved: native],
             MouseEvent::Down => msg_send![target.view, mouseDown: native],
             MouseEvent::Up => msg_send![target.view, mouseUp: native],
+            MouseEvent::RightDown => msg_send![target.view, rightMouseDown: native],
+            MouseEvent::RightUp => msg_send![target.view, rightMouseUp: native],
         };
     }
 }

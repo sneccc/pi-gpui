@@ -41,7 +41,10 @@ pub fn mouse(
     const WM_MOUSEMOVE: u32 = 0x0200;
     const WM_LBUTTONDOWN: u32 = 0x0201;
     const WM_LBUTTONUP: u32 = 0x0202;
+    const WM_RBUTTONDOWN: u32 = 0x0204;
+    const WM_RBUTTONUP: u32 = 0x0205;
     const MK_LBUTTON: usize = 0x0001;
+    const MK_RBUTTON: usize = 0x0002;
 
     // SAFETY: a query on a live HWND.
     let scale = f64::from(unsafe { GetDpiForWindow(target.hwnd) }.max(96)) / 96.0;
@@ -50,6 +53,8 @@ pub fn mouse(
         MouseEvent::Move => (WM_MOUSEMOVE, 0),
         MouseEvent::Down => (WM_LBUTTONDOWN, MK_LBUTTON),
         MouseEvent::Up => (WM_LBUTTONUP, 0),
+        MouseEvent::RightDown => (WM_RBUTTONDOWN, MK_RBUTTON),
+        MouseEvent::RightUp => (WM_RBUTTONUP, 0),
     };
     // SAFETY: posting to a live HWND from the thread that owns it.
     if unsafe { PostMessageW(target.hwnd, message, buttons, position) } == 0 {

@@ -15,6 +15,7 @@
 //! key down space cmd-enter     keystrokes, in gpui's notation
 //! type some text               typed character by character
 //! click 640 400                press and release at window coordinates
+//! rclick 640 400               the same with the right button (Windows)
 //! move 640 400                 move the pointer (hover)
 //! wait 500                     milliseconds
 //! shot /tmp/window.png         PNG of the window, 1 px per point (`2x` after
@@ -99,14 +100,17 @@ async fn run(line: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<(
                 dispatch_key(window, typed(character), cx).await?;
             }
         }
-        "click" | "move" => {
+        "click" | "rclick" | "move" => {
             let (x, y) = parse_point(rest)?;
             let target =
                 update(window, cx, |window, _| native_window(window))?.ok_or("no native window")?;
-            let events: &[MouseEvent] = if name == "click" {
-                &[MouseEvent::Move, MouseEvent::Down, MouseEvent::Up]
-            } else {
-                &[MouseEvent::Move]
+            let events: &[MouseEvent] = match name {
+                "click" => &[MouseEvent::Move, MouseEvent::Down, MouseEvent::Up],
+                "rclick" if cfg!(windows) => {
+                    &[MouseEvent::Move, MouseEvent::RightDown, MouseEvent::RightUp]
+                }
+                "rclick" => return Err("rclick is not supported here".into()),
+                _ => &[MouseEvent::Move],
             };
             for event in events {
                 native::mouse(window, cx, target, *event, x, y)?;
@@ -199,6 +203,11 @@ enum MouseEvent {
     Move,
     Down,
     Up,
+    // Built on every system; only Windows posts them (see `rclick`).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    RightDown,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    RightUp,
 }
 
 #[cfg(test)]

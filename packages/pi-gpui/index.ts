@@ -83,7 +83,7 @@ export default function (pi: any) {
 			if (process.platform === "win32") {
 				// No /bin/sh: a detached node does the waiting.
 				openAfterExit(process.pid, opener[0], url);
-				ctx.ui.notify("Continuing in Pi GPUI.", "info");
+				ctx.ui.notify(handoverMessage(ctx), "info");
 				ctx.shutdown();
 				return;
 			}
@@ -99,7 +99,9 @@ export default function (pi: any) {
 				],
 				{ detached: true, stdio: "ignore" },
 			).unref();
-			ctx.ui.notify("Continuing in Pi GPUI.", "info");
+			ctx.ui.notify(handoverMessage(ctx), "info");
+			// In a terminal pi defers this until the agent is idle (queued messages
+			// included), so a run in progress finishes and is saved first.
 			ctx.shutdown();
 		},
 	});
@@ -142,6 +144,13 @@ function watchSessionSharing(pi: any) {
 	});
 	pi.on("agent_start", () => lease?.refresh());
 	pi.on("agent_settled", () => lease?.refresh());
+}
+
+/** What /gpui says: pi only exits (and the app takes over) once a run in progress is done. */
+export function handoverMessage(ctx: { isIdle?: () => boolean }): string {
+	return ctx.isIdle && !ctx.isIdle()
+		? "Pi GPUI takes over this session when the current run finishes."
+		: "Continuing in Pi GPUI.";
 }
 
 export function sharedSessionWarning(holder: string): string {

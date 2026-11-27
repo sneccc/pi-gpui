@@ -5,7 +5,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { exeFromRegQuery, openAfterExit, windowsExeCandidates } from "./index.ts";
+import { exeFromRegQuery, handoverMessage, openAfterExit, windowsExeCandidates } from "./index.ts";
+
+test("/gpui says when the app takes over: now, or after the run in progress", () => {
+	assert.equal(handoverMessage({ isIdle: () => true }), "Continuing in Pi GPUI.");
+	assert.match(handoverMessage({ isIdle: () => false }), /when the current run finishes/);
+	assert.equal(handoverMessage({}), "Continuing in Pi GPUI.");
+});
 
 test("windows candidates: PI_GPUI_EXE first, then PATH, the install folder, the registered exe", () => {
 	const candidates = windowsExeCandidates(

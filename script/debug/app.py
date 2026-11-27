@@ -100,8 +100,9 @@ def send(*commands, timeout=60):
 
 def start(args):
     fresh, show = "--fresh" in args, "--show" in args
-    sandbox_pi = "--sandbox-pi" in args or "--scripted" in args
-    valued = {"--plugin", "--scripted", "--extension"}  # options that take the next argument
+    real_model = next((args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--real-model"), None)
+    sandbox_pi = "--sandbox-pi" in args or "--scripted" in args or bool(real_model)
+    valued = {"--plugin", "--scripted", "--extension", "--real-model"}  # options that take the next argument
     plugins = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--plugin"]
     extensions = [os.path.abspath(args[i + 1]) for i, arg in enumerate(args[:-1]) if arg == "--extension"]
     scripted = next((args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--scripted"), None)
@@ -119,12 +120,27 @@ def start(args):
         if os.path.exists(os.path.join(AUTO, stale)):
             os.remove(os.path.join(AUTO, stale))
     env = dict(os.environ, HOME=HOME, PI_GPUI_AUTOMATION=AUTO)
-    if sandbox_pi:
+    if sandbox_pi and not real_model:
         # A sandboxed pi must never reach a real model: without credentials a
         # missing fake model fails loudly instead of spending money.
         env = {name: value for name, value in env.items() if not CREDENTIAL.search(name)}
+    if sandbox_pi:
         os.makedirs(AGENT, exist_ok=True)
         env["PI_CODING_AGENT_DIR"] = AGENT
+    if real_model:
+        # Opt-in, costs money: a real model with a copy of the user's logins,
+        # in the sandbox agent folder (the user's sessions stay untouched).
+        # Only the --extension paths load, so give the provider's package too
+        # (e.g. pi-claude-cli for a Claude subscription).
+        provider, _, model = real_model.partition("/")
+        real_agent = os.path.join(os.path.expanduser("~"), ".pi", "agent")
+        if os.path.isfile(os.path.join(real_agent, "auth.json")):
+            shutil.copy(os.path.join(real_agent, "auth.json"), os.path.join(AGENT, "auth.json"))
+        with open(os.path.join(AGENT, "settings.json"), "w", encoding="utf-8") as file:
+            json.dump({"packages": extensions, "defaultProvider": provider, "defaultModel": model,
+                       "defaultThinkingLevel": "off"}, file)
+        # HOME stays the sandbox (the app's data); provider CLIs such as
+        # claude find their login through USERPROFILE, which is unchanged.
     if scripted:
         # pi's default model becomes the scripted fake model (scripted-model.ts).
         with open(os.path.join(AGENT, "settings.json"), "w", encoding="utf-8") as file:

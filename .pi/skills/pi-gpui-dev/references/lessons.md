@@ -53,6 +53,12 @@ them "moved to …". Log corrections of wrong advice here too.
 
 ## Open questions
 
+- A message sent about 2 s after a session opened failed with "No API key
+  found" and model "unknown": the scripted-model extension had probably not
+  registered its provider yet. Seen once in 5 runs (debug app, sandboxed pi).
+  Could a user hit it by typing right after opening a session? Does the app
+  wait for pi to be ready (get_state with a model) before sending? Not checked.
+
 - Why does "a second click restores the window exactly" still flake under
   load? Idea: the hover highlight fades over time; compare after a `move`
   away and a settle with a longer quiet time, or compare only the sidebar

@@ -6,6 +6,22 @@ entry "moved to <page>". Corrections of wrong advice are logged here too.
 
 ## Entries
 
+- **2026-11-27: in a form, typing goes into the own-answer field only after
+  Down.** With an option highlighted, Space picks it, so typed text with a
+  space in it picks the option instead. Verified: a typed "Maya, she ..."
+  came back as the accepted recommendation until the test pressed Down first
+  (Grill plugin, `windows-smoke.py --only grill`). Moved to recipes.md.
+- **2026-11-27: put a plugin's pure logic in a dependency-free module.** pi's
+  `@earendil-works/pi-ai` exists only inside pi, so a test cannot import
+  `pi-extension.ts`. The Grill plugin keeps form layout and answer text in
+  `format.mjs`, imported by plugin.mjs, the extension and the tests.
+  Verified: 5 node tests, 2 node mutations caught.
+- **2026-11-27: a plugin can steer a skill without editing it.** Skills
+  installed from git are overwritten on update. The Grill tool's
+  `promptGuidelines` tell the agent to use `grill_round` whenever it grills
+  (grilling, grill-me, grill-with-docs). Not yet verified with a real model:
+  the tests use a scripted one.
+
 - **2026-11-27: a skill with ": " in an unquoted description is skipped
   silently.** pi-gpui-dev did not load (no warning) until its description was
   quoted. Verified: `pi --mode rpc --skill <dir>` + `get_commands` listed

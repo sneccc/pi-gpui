@@ -53,7 +53,10 @@ Prompt kinds:
   Answer: `answers: [{id, selected, labels, text?}]`, also on cancel (what was
   given so far, with `cancelled: true`).
 - Keys in a form: arrows move, Space or a digit picks, Enter goes on,
-  Left/Right change the question, Esc cancels.
+  Left/Right change the question, Esc cancels. To type an own answer, move
+  to the text field first (Down): Space on a highlighted option picks it.
+- A bigger example with recommendations first and a summary for the agent:
+  `examples/plugins/grill` (grilling skills).
 
 Never send the secret itself back to pi (see examples/plugins/secrets: it
 returns only where the value was saved).

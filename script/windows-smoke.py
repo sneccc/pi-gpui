@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit,images] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -658,6 +658,56 @@ def edit_check(sandbox):
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
 
 
+def images_check(sandbox):
+    """A picture pi reads (its `read` tool on an image) shows in the chat
+    right away, without opening the tool row."""
+    home, auto, project = (os.path.join(sandbox, name) for name in ("home12", "auto12", "images project"))
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    # A picture of one distinctive colour, to find on screen: a 600x300 PNG.
+    color = (43, 108, 176)
+    width, height = 600, 300
+    row = b"\x00" + bytes(color) * width
+    raw = zlib.compress(row * height)
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    with open(os.path.join(project, "chart.png"), "wb") as file:
+        file.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                   + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
+    agent = fake_pi_agent(sandbox, "agent12", "scripted-model.ts")
+    steps = os.path.join(sandbox, "images-steps.json")
+    json.dump([{"tool": "read", "args": {"path": "chart.png"}}, {"text": "Seen."}], open(steps, "w"))
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
+               PI_SCRIPTED_MODEL=steps)
+    app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    driver = Automation(auto)
+    shot = os.path.join(sandbox, "images.png")
+
+    def picture_pixels():
+        driver.send("move 700 300", f"shot {shot}")
+        if not os.path.isfile(shot):
+            return 0
+        _, _, bpp, rows = decode_png(shot)
+        return sum(1 for line in rows[80:780] for x in range(300, 1150, 2)
+                   if abs(line[x * bpp] - color[0]) < 8 and abs(line[x * bpp + 1] - color[1]) < 8
+                   and abs(line[x * bpp + 2] - color[2]) < 8)
+
+    try:
+        check("images: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        driver.settle(sandbox)
+        check("images: nothing blue before", picture_pixels() < 50)
+        driver.send("type look at the chart", "key enter")
+        # A 600x300 picture shown at most 320 wide: thousands of its pixels.
+        shown = wait_for(lambda: picture_pixels() > 5000, 15, 0.2)
+        check("images: the picture pi read shows in the chat without opening the row", bool(shown),
+              picture_pixels())
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+
+
 def handover_check(sandbox):
     """A fourth launch, with a HOME of its own: later launches hand their
     folder or pi-gpui:// link to the running app and exit."""
@@ -1216,7 +1266,8 @@ def main_check(sandbox):
 CHECKS = {"main": main_check, "controls": window_controls_check, "crash": crash_check,
           "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
           "gpui": gpui_check, "held": held_check, "ask": ask_check,
-          "template": template_check, "edit": edit_check}
+          "template": template_check, "edit": edit_check,
+          "images": images_check}
 
 
 def run_check(name, sandbox):

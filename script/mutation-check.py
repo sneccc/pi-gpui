@@ -121,6 +121,13 @@ MUTATIONS += [
 
 E2E_MUTATIONS = [
     (
+        "pictures a tool returns show only after opening the row",
+        "src/chat.rs",
+        "                    .when(!images.is_empty(), |this| {\n                        this.child(\n                            div()\n                                .px(px(8.))",
+        "                    .when(open && !images.is_empty(), |this| {\n                        this.child(\n                            div()\n                                .px(px(8.))",
+        "images",
+    ),
+    (
         "Up in the empty message box does nothing",
         "src/text_input.rs",
         "        if self.recall_older(cx) {\n            return;\n        }",
@@ -216,7 +223,7 @@ NODE_MUTATIONS = [
     (
         "a pi takes over a session another live pi holds",
         "packages/pi-gpui/index.ts",
-        "if (!fs.existsSync(session) || leaseHolder(session)) return false;",
+        "if (!fs.existsSync(session) || (!takeOver && leaseHolder(session))) return false;",
         "if (!fs.existsSync(session)) return false;",
     ),
     (
@@ -269,6 +276,15 @@ NODE_MUTATIONS += [
         "packages/pi-gpui/index.ts",
         "return ctx.isIdle && !ctx.isIdle()",
         "return false",
+    ),
+]
+
+NODE_MUTATIONS += [
+    (
+        "the app's pi respects a lease whose pid Windows already reused",
+        "extensions/pi-gpui-bridge.ts",
+        "holdSession(session, \"Pi GPUI\", { appPid }, true)",
+        "holdSession(session, \"Pi GPUI\", { appPid })",
     ),
 ]
 

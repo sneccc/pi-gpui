@@ -6,6 +6,19 @@ them "moved to …". Log corrections of wrong advice here too.
 
 ## Entries
 
+- **2026-11-27: tool pictures were only visible in an expanded row.** pi's
+  `read` returns image content, the app kept it in `Row::Tool.images` but drew
+  it inside the collapsed details. Now always drawn under the header.
+  Verified: `--only images` counts the picture's colour on screen; the
+  mutation "show only after opening the row" is caught.
+- **2026-11-27: Node cannot tell a reused pid from a live holder.** The lease
+  group flaked: a killed stand-in terminal pi's pid was reused within seconds
+  under parallel load, `process.kill(pid, 0)` said alive, and the app's pi
+  refused the lease. The app already checks with start times before opening,
+  so the bridge now takes the lease over (`holdSession(..., true)`).
+  Verified: unit test through the bridge's own `session_start`; 4 green full
+  runs; node mutation caught.
+
 - **2026-11-27: a skill with ": " in an unquoted description is skipped
   silently.** pi-gpui-dev did not load (no warning) until its description was
   quoted. Verified: `pi --mode rpc --skill <dir>` + `get_commands` listed

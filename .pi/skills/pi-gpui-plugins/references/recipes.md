@@ -49,11 +49,14 @@ Prompt kinds:
 - `prompt.form {id, callId, questions, title?, submitLabel?}`: up to 20
   questions, one at a time with Back/Next. Question: `title`, `id?`,
   `description?`, `options?` (strings or `{label, description?}`, up to 20),
-  `multiple?`, `allowText?`, `required?` (default true), `placeholder?`.
+  `multiple?`, `allowText?`, `required?` (default true), `placeholder?`,
+  `selected?` (option indexes picked when the form opens: put the
+  recommended answer there so Enter accepts it).
   Answer: `answers: [{id, selected, labels, text?}]`, also on cancel (what was
   given so far, with `cancelled: true`).
-- Keys in a form: arrows move, Space or a digit picks, Enter goes on,
-  Left/Right change the question, Esc cancels. To type an own answer, move
+- Keys in a form: Up/Down move, Space or a digit picks, Enter goes on,
+  Left/Right change the question without answering, Esc cancels. Expand
+  (next to Cancel) shows all questions; Up/Down then flow across questions. To type an own answer, move
   to the text field first (Down): Space on a highlighted option picks it.
 - A bigger example with recommendations first and a summary for the agent:
   `examples/plugins/grill` (grilling skills).

@@ -6,6 +6,18 @@ them "moved to …". Log corrections of wrong advice here too.
 
 ## Entries
 
+- **2026-11-27: three smoke groups ran pi with the user's real agent folder**
+  (main, handover, lease; also controls' env). Each test pi loaded all of
+  Daniel's extensions, started slowly under load (the lease group flaked)
+  and wrote durable-subagents databases into his real ~/.pi. Now every group
+  uses `sandbox_env()` (empty `PI_CODING_AGENT_DIR`). Verified: 4 full runs
+  wrote nothing to ~/.pi/agent/durable-subagents (639 files before and after);
+  lease passed 4 of 4. About 232 orphan durable DBs from earlier runs remain
+  there (not deleted: some may be Daniel's).
+- **2026-11-27: pi.cmd runs two node processes with `--mode rpc`** (the
+  launcher, then pi's CLI). A lease names the CLI's pid; compare against the
+  session pis present when you read it, not a list taken earlier.
+
 - **2026-11-27: tool pictures were only visible in an expanded row.** pi's
   `read` returns image content, the app kept it in `Row::Tool.images` but drew
   it inside the collapsed details. Now always drawn under the header.
@@ -52,6 +64,12 @@ them "moved to …". Log corrections of wrong advice here too.
   after the settle fix. Not fixed yet: see Open questions.
 
 ## Open questions
+
+- **A first message sent right after a session opens can fail** ("No API key
+  found", model "unknown") when pi has not registered extension providers
+  yet. Seen with the fake models under heavy load: the template group failed
+  1 of 4 full runs, never alone (5 of 5). Does the app need to wait for pi to
+  report a model (get_state) before sending, or re-query state? Not checked.
 
 - A message sent about 2 s after a session opened failed with "No API key
   found" and model "unknown": the scripted-model extension had probably not

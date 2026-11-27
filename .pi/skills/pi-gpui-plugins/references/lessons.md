@@ -6,6 +6,12 @@ entry "moved to <page>". Corrections of wrong advice are logged here too.
 
 ## Entries
 
+- **2026-11-27: forms can pre-pick options (`selected`), and Right no longer
+  needs an answer.** Before, Right ran "Next", which waits for an answer and
+  sends on the last question, so it looked broken on unanswered questions.
+  Verified: `--only grill` leaves Q1 untouched and reaches Q2/Q3 with Right;
+  e2e mutations for both caught; expanded movement unit-tested.
+
 - **2026-11-27: in a form, typing goes into the own-answer field only after
   Down.** With an option highlighted, Space picks it, so typed text with a
   space in it picks the option instead. Verified: a typed "Maya, she ..."

@@ -30,6 +30,22 @@ shot` with no path writes `.scratch/shots/<time>.png`.
 The app runs in a sandbox (`.scratch/headless/home` as `HOME`), so it never
 touches your real projects and never takes over launches of your real app.
 
+## A real terminal pi, headless
+
+`terminal.py` runs any terminal program in a hidden pseudo console (ConPTY via ctypes, no
+packages): type keys, wait for text on its screen, wait for it to exit. With `slow-model.ts`
+(a free fake model that answers "SLOW_REPLY_DONE n" after `PI_SLOW_MODEL_MS`) a pi run can be
+caught in the middle, e.g. to type `/gpui` while it works. See `gpui_check` and `held_check` in
+`script/windows-smoke.py` for complete examples.
+
+```python
+sys.path.insert(0, "script/debug")
+from terminal import Terminal
+with Terminal(["cmd.exe", "/d", "/c", pi, "--offline", "-e", "script/debug/slow-model.ts",
+               "--provider", "faux", "--model", "faux-1"], cwd=project, env=env) as term:
+    term.wait_for("faux-1"); term.type("hello"); term.type("\r")
+```
+
 ## Where files go
 
 | Where | What | In git |

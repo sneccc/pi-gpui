@@ -2293,6 +2293,14 @@ impl HubView {
                 cx.notify();
             },
         ));
+        let log =
+            item("app-menu-log", "Show App Log", None).on_click(cx.listener(|this, _, _, cx| {
+                this.app_menu = None;
+                if let Some(path) = crate::app_log::path() {
+                    cx.open_with_system(&path);
+                }
+                cx.notify();
+            }));
         let quit = item("app-menu-quit", "Quit", Some("⌘Q")).on_click(|_, _, cx| cx.quit());
         deferred(
             anchored()
@@ -2316,6 +2324,7 @@ impl HubView {
                         .child(settings)
                         .child(updates)
                         .child(about)
+                        .child(log)
                         .child(div().my(px(4.)).h(px(1.)).bg(colors.border_variant))
                         .child(quit),
                 ),

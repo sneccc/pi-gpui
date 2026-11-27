@@ -49,6 +49,14 @@ impl JsonlProcess {
             .stderr(Stdio::piped())
             .spawn()?;
 
+        // Its stderr goes to the app log (app_log.rs), as "[name pid] line".
+        let label = format!(
+            "[{} {}]",
+            std::path::Path::new(command.get_program())
+                .file_stem()
+                .map_or_else(|| "child".into(), |stem| stem.to_string_lossy()),
+            child.id()
+        );
         let stdin = child.stdin.take().ok_or_else(missing_pipe)?;
         let stdout = child.stdout.take().ok_or_else(missing_pipe)?;
         let stderr = child.stderr.take().ok_or_else(missing_pipe)?;
@@ -60,7 +68,7 @@ impl JsonlProcess {
 
         thread::spawn({
             let stderr_tail = stderr_tail.clone();
-            move || collect_stderr(stderr, stderr_tail)
+            move || collect_stderr(stderr, stderr_tail, label)
         });
 
         let (sender, receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
@@ -135,9 +143,12 @@ fn write_commands(mut stdin: ChildStdin, commands: std_mpsc::Receiver<String>) {
     // Sender dropped: returning drops stdin, which is pi's shutdown signal.
 }
 
-fn collect_stderr(stderr: impl Read, tail: Arc<Mutex<VecDeque<String>>>) {
+fn collect_stderr(stderr: impl Read, tail: Arc<Mutex<VecDeque<String>>>, label: String) {
     for line in BufReader::new(stderr).lines() {
         let Ok(line) = line else { return };
+        if !line.trim().is_empty() {
+            eprintln!("{label} {line}");
+        }
         if let Ok(mut tail) = tail.lock() {
             if tail.len() == STDERR_TAIL_LINES {
                 tail.pop_front();

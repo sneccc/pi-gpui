@@ -1,6 +1,7 @@
 // No console window on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod app_log;
 mod attachments;
 #[cfg(any(all(debug_assertions, target_os = "macos"), windows))]
 mod automation;
@@ -50,7 +51,15 @@ use crate::ui::Assets;
 
 actions!(
     app,
-    [Quit, CheckForUpdates, About, Hide, HideOthers, ShowAll]
+    [
+        Quit,
+        CheckForUpdates,
+        About,
+        ShowAppLog,
+        Hide,
+        HideOthers,
+        ShowAll
+    ]
 );
 
 fn main() {
@@ -69,6 +78,9 @@ fn main() {
     {
         std::process::exit(code);
     }
+    // Everything written to stderr also goes to <app cache>/logs/pi-gpui.log
+    // (a Windows GUI app has no stderr of its own).
+    app_log::init();
     // Windows: pi and the other children die with the app, even a crashed one.
     process::contain_children();
     // Windows tests and debugging: PI_GPUI_HEADLESS=1 keeps the window hidden.
@@ -142,6 +154,11 @@ fn main() {
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         cx.on_action(|_: &About, cx| {
             cx.open_url("https://github.com/bytesbay/pi-gpui");
+        });
+        cx.on_action(|_: &ShowAppLog, cx| {
+            if let Some(path) = app_log::path() {
+                cx.open_with_system(&path);
+            }
         });
         cx.on_action(|_: &Quit, cx| cx.quit());
         updater::AutoUpdater::init(cx);
@@ -247,6 +264,7 @@ fn app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("About Pi GPUI", About),
                 MenuItem::action("Check for Updates…", CheckForUpdates),
+                MenuItem::action("Show App Log", ShowAppLog),
                 MenuItem::separator(),
                 MenuItem::action("Settings…", hub::OpenSettings),
                 MenuItem::separator(),

@@ -1295,6 +1295,14 @@ def main_check(sandbox):
 
         # --- screenshot has real content
         shot = os.path.join(sandbox, "window.png")
+        # The app log (src/app_log.rs) gets the same lines, timed, while the
+        # captured stderr above still gets them too.
+        app_log = os.path.join(home, ".cache", "pi-gpui", "logs", "pi-gpui.log")
+        logged = wait_for(lambda: os.path.isfile(app_log) and "using pi" in open(app_log, errors="replace").read(), 10)
+        check("the app log records what the app writes to stderr", bool(logged))
+        check("... with the time on each line",
+              bool(logged) and re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} Pi GPUI .* started",
+                                        open(app_log, errors="replace").readline()) is not None)
         answer = driver.send(f"shot {shot}")
         check("shot reports ok", answer == [f"shot {shot}: ok"], answer)
         if os.path.isfile(shot):

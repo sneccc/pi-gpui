@@ -47,7 +47,7 @@ Three layers, cheapest first:
 | What | Command | Needs |
 |---|---|---|
 | Unit tests: path encoding, links, drive-letter image paths, process lookup, Recycle Bin, and the automation's pixel and mouse maths | `cargo test` | nothing |
-| End-to-end smoke test: starts the real exe in a sandbox and drives it through the protocol above | `python -I script/windows-smoke.py` | a release build, `pi` on PATH |
+| End-to-end smoke test: starts the real exe in a sandbox and drives it through the protocol above; eight check groups run side by side, headless, in about 20 s | `python -I script/windows-smoke.py` (`--only gpui,held`, `--serial`, `--verbose`, `--show`) | a release build, `pi` on PATH |
 | Mutation check: puts one bug at a time into the source and requires the tests to fail | `python -I script/mutation-check.py` (unit), `--e2e` (smoke test) | a clean working tree |
 
 The smoke test sends no prompt, so it costs no tokens. It checks that pi is found without `PI_EXECUTABLE`, that bad commands report errors, that a screenshot has real content, that a click changes the window, that the saved project path has no `\?\` prefix, that no console window appears, that closing a session or quitting leaves no pi process behind, that the caption buttons and a caption double click work, that killing the app stops pi too, that pasting a file copied in Explorer works, and that a second launch hands its folder or `pi-gpui://` link to the running app and exits.

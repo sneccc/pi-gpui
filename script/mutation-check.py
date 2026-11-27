@@ -138,6 +138,7 @@ E2E_MUTATIONS = [
         "src/process.rs",
         "const CREATE_NO_WINDOW: u32 = 0x0800_0000;",
         "const CREATE_NO_WINDOW: u32 = 0;",
+        "main",
     ),
     (
         "the project keeps the verbatim prefix",
@@ -150,12 +151,14 @@ E2E_MUTATIONS = [
         "src/main.rs",
         "    process::contain_children();\n",
         "",
+        "crash",
     ),
     (
         "pasting copied files does nothing (clipboard list ignored)",
         "src/platform.rs",
         "        if IsClipboardFormatAvailable(CF_HDROP) == 0 {",
         "        if IsClipboardFormatAvailable(CF_HDROP) != 0 {",
+        "main",
     ),
     (
         "a second launch never finds the running app (no handover)",

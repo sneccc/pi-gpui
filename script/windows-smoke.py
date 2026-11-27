@@ -12,11 +12,13 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--only controls,crash,handover,lease,refresh,gpui,held] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
---only runs just the named separate launches (seconds instead of minutes).
+The check groups run side by side (each has its own HOME and app); --serial runs
+them one after another. --only runs just the named groups. Each group prints one
+line when it is done (its time, passed and failed checks); --verbose lists every check.
 
 Needs pi on PATH. Sends no prompt, so it costs no tokens. Exit code 0 = all
 checks passed. See docs/WINDOWS_UI_CHECKS.md.
@@ -30,13 +32,17 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ONLY = sys.argv[sys.argv.index("--only") + 1].split(",") if "--only" in sys.argv[1:] else None
+SERIAL = "--serial" in sys.argv[1:]
+VERBOSE = "--verbose" in sys.argv[1:]
 ARGS = [arg for index, arg in enumerate(sys.argv[1:], 1)
-        if arg not in ("--show", "--only") and sys.argv[index - 1] != "--only"]
+        if arg not in ("--show", "--only", "--serial", "--verbose") and sys.argv[index - 1] != "--only"]
 HEADLESS = "--show" not in sys.argv[1:]
 EXE = ARGS[0] if ARGS else os.path.join(ROOT, "target", "release", "pi-gpui.exe")
 
@@ -60,8 +66,21 @@ failures = []
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
+# Checks run side by side, one thread each: a thread collects its own lines,
+# printed together when it is done.
+_output = threading.local()
+
+
+def say(line):
+    lines = getattr(_output, "lines", None)
+    if lines is None:
+        print(line, flush=True)
+    else:
+        lines.append(line)
+
+
 def check(name, ok, detail=""):
-    print(("PASS  " if ok else "FAIL  ") + name + (f"   [{detail}]" if detail and not ok else ""))
+    say(("PASS  " if ok else "FAIL  ") + name + (f"   [{detail}]" if detail and not ok else ""))
     if not ok:
         failures.append(name)
     return ok
@@ -115,6 +134,39 @@ def start_time(pid):
     return times[0] if ok else None
 
 
+ntdll = ctypes.WinDLL("ntdll")
+ntdll.NtQueryInformationProcess.restype = ctypes.c_long
+ntdll.NtQueryInformationProcess.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.ULONG,
+                                            ctypes.POINTER(wt.ULONG)]
+
+
+class UnicodeString(ctypes.Structure):
+    _fields_ = [("length", ctypes.c_ushort), ("maximum", ctypes.c_ushort), ("buffer", ctypes.c_void_p)]
+
+
+def command_line(pid):
+    """The process's command line (ProcessCommandLineInformation), or None."""
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        size = wt.ULONG(0)
+        buffer = ctypes.create_string_buffer(8192)
+        if ntdll.NtQueryInformationProcess(handle, 60, buffer, len(buffer), ctypes.byref(size)) != 0:
+            return None
+        text = UnicodeString.from_buffer(buffer)
+        return ctypes.wstring_at(text.buffer, text.length // 2)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def session_pis(app_pid):
+    """{pid: exe} of the pi processes running sessions under the app: node.exe
+    with `--mode rpc`. Not the short `pi --version` the app runs at start-up."""
+    return {pid: exe for pid, exe in descendants(app_pid).items()
+            if exe.lower() == "node.exe" and "--mode rpc" in (command_line(pid) or "")}
+
+
 def descendants(pid):
     """{pid: exe name} of the processes `pid` started, and theirs. A parent pid
     can be stale (that parent died and its pid went to a new process), so a
@@ -142,21 +194,35 @@ def alive(pid):
 WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 
+user32.OpenDesktopW.restype = wt.HANDLE
+user32.OpenDesktopW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.BOOL, wt.DWORD]
+user32.EnumDesktopWindows.argtypes = [wt.HANDLE, WNDENUMPROC, wt.LPARAM]
+
+
 def visible_windows(pids):
-    """[(class name, title)] of visible top-level windows owned by `pids`."""
-    found = []
+    """[(class name, title)] of visible top-level windows owned by `pids`, on
+    this thread's desktop and on the user's normal one: the app's own window
+    is on the hidden desktop, but processes it starts open theirs (a console,
+    say) on the normal desktop."""
+    found, seen = [], set()
 
     def visit(hwnd, _):
         owner = wt.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-        if owner.value in pids and user32.IsWindowVisible(hwnd):
+        if owner.value in pids and user32.IsWindowVisible(hwnd) and hwnd not in seen:
+            seen.add(hwnd)
             cls, title = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd, cls, 256)
             user32.GetWindowTextW(hwnd, title, 256)
             found.append((cls.value, title.value))
         return True
 
-    user32.EnumWindows(WNDENUMPROC(visit), 0)
+    callback = WNDENUMPROC(visit)
+    user32.EnumWindows(callback, 0)
+    normal = user32.OpenDesktopW("Default", 0, False, 0x0041)  # DESKTOP_READOBJECTS | DESKTOP_ENUMERATE
+    if normal:
+        user32.EnumDesktopWindows(normal, callback, 0)
+        user32.CloseDesktop(normal)
     return found
 
 
@@ -214,14 +280,23 @@ def screen_position(hwnd, x, y):
 
 def hit_test(hwnd, x, y=18):
     """What Windows would make of the point (x, y) of the client area."""
-    # gpui follows the pointer itself: move it there first, as real input does
-    user32.PostMessageW(hwnd, 0x0200, 0, (y << 16) | x)  # WM_MOUSEMOVE
-    time.sleep(0.2)
+    # gpui follows the pointer itself: move it there first, as real input does.
+    # SendMessage returns once the app has handled the move: no sleep needed.
+    user32.SendMessageW(hwnd, 0x0200, 0, (y << 16) | x)  # WM_MOUSEMOVE
     return user32.SendMessageW(hwnd, 0x0084, 0, screen_position(hwnd, x, y))  # WM_NCHITTEST
 
 
+_last_click = threading.local()
+
+
 def caption_click(hwnd, x, y=18, double=False):
-    """The messages a real left click (or double click) on the title bar sends."""
+    """The messages a real left click (or double click) on the title bar sends.
+    Clicks closer together than Windows' double-click time would count as one
+    multi-click, so it waits that long after this thread's previous click."""
+    gap = user32.GetDoubleClickTime() / 1000 + 0.05
+    elapsed = time.time() - getattr(_last_click, "at", 0)
+    if elapsed < gap:
+        time.sleep(gap - elapsed)
     hit = hit_test(hwnd, x, y)
     where = screen_position(hwnd, x, y)
     messages = [0x00A0, 0x00A1, 0x00A2]  # WM_NCMOUSEMOVE, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP
@@ -230,7 +305,8 @@ def caption_click(hwnd, x, y=18, double=False):
     for message in messages:
         user32.PostMessageW(hwnd, message, hit, where)
         time.sleep(0.05)
-    time.sleep(0.7)
+    _last_click.at = time.time()
+    # The caller waits for the effect (maximized, minimized, closed).
     return hit
 
 
@@ -247,7 +323,7 @@ def window_controls_check(sandbox):
         check("controls: the window opens without a project", bool(hwnd))
         if not hwnd:
             return
-        time.sleep(1.0)
+        Automation(auto).send("wait 1")  # answers once the app's event loop runs
         width = client_width(hwnd)
         # Walk the title bar from the right: close, maximize, minimize, then free caption space.
         seen = []
@@ -261,18 +337,20 @@ def window_controls_check(sandbox):
         zoomed = lambda: bool(user32.IsZoomed(hwnd))
         # The buttons sit 125, 79 and 33 points from the right edge (46 wide each);
         # the width changes when the window is maximized, so ask again each time.
+        restored = lambda: not user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd)
         check("controls: maximize button maximizes",
-              caption_click(hwnd, client_width(hwnd) - 79) == 9 and zoomed())
+              caption_click(hwnd, client_width(hwnd) - 79) == 9 and bool(wait_for(zoomed, 5, 0.05)))
         check("controls: the same button restores",
-              caption_click(hwnd, client_width(hwnd) - 79) == 9 and not zoomed())
+              caption_click(hwnd, client_width(hwnd) - 79) == 9 and bool(wait_for(restored, 5, 0.05)))
         caption_click(hwnd, 600, double=True)
-        check("controls: double click on the caption maximizes", zoomed())
+        check("controls: double click on the caption maximizes", bool(wait_for(zoomed, 5, 0.05)))
         caption_click(hwnd, 600, double=True)
-        check("controls: double click again restores", not zoomed())
+        check("controls: double click again restores", bool(wait_for(restored, 5, 0.05)))
         check("controls: minimize button minimizes",
-              caption_click(hwnd, client_width(hwnd) - 125) == 8 and bool(user32.IsIconic(hwnd)))
+              caption_click(hwnd, client_width(hwnd) - 125) == 8
+              and bool(wait_for(lambda: user32.IsIconic(hwnd), 5, 0.05)))
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-        time.sleep(0.5)
+        wait_for(restored, 5, 0.05)
         check("controls: close button closes the app",
               caption_click(hwnd, client_width(hwnd) - 33) == 20
               and bool(wait_for(lambda: app.poll() is not None, 10)))
@@ -282,20 +360,30 @@ def window_controls_check(sandbox):
 
 
 def crash_check(sandbox):
-    """A third launch: the app is killed without warning (as a crash would),
-    and pi must not be left running."""
+    """A third launch: the app is killed without warning (as a crash would)
+    while its pi is busy, and pi must not be left running. An idle pi exits by
+    itself when its input closes; a busy one finishes its run first (here: a
+    minute), so only the job object stops it in time."""
     home, auto = os.path.join(sandbox, "home3"), os.path.join(sandbox, "auto3")
     project = os.path.join(sandbox, "crash project")
     for folder in (home, auto, project):
         os.makedirs(folder)
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    agent = slow_pi_agent(sandbox, "agent3")
+    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
+               PI_SLOW_MODEL_MS="60000")
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    driver = Automation(auto)
     pis = {}
     try:
-        pis = wait_for(lambda: any(e.lower() == "node.exe" for e in descendants(app.pid).values())
-                       and descendants(app.pid), 25) or {}
+        pis = wait_for(lambda: session_pis(app.pid) and descendants(app.pid), 25) or {}
         check("crash: the app has a session running pi", bool(pis), pis)
+        driver.settle(sandbox)
+        driver.send("type crash test", "key enter")
+        asked = lambda: any("crash test" in open(os.path.join(folder, name), encoding="utf-8").read()
+                            for folder, _, names in os.walk(os.path.join(agent, "sessions"))
+                            for name in names if name.endswith(".jsonl"))
+        check("crash: pi is busy with a prompt (the slow model takes a minute)", bool(wait_for(asked, 15)))
         # Only the app: no /T, so nothing but the job object can stop pi.
         subprocess.run(["taskkill", "/F", "/PID", str(app.pid)], capture_output=True)
         check("crash: the app is gone", bool(wait_for(lambda: app.poll() is not None, 10)))
@@ -308,6 +396,30 @@ def crash_check(sandbox):
         for pid in pis:
             if alive(pid):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+
+
+def slow_pi_agent(sandbox, name):
+    """A pi agent folder whose default model is the free slow fake model
+    (script/debug/slow-model.ts, delay from PI_SLOW_MODEL_MS)."""
+    agent = os.path.join(sandbox, name)
+    os.makedirs(agent)
+    with open(os.path.join(agent, "settings.json"), "w", encoding="utf-8") as file:
+        json.dump({"extensions": [os.path.join(ROOT, "script", "debug", "slow-model.ts")],
+                   "defaultProvider": "faux", "defaultModel": "faux-1", "defaultThinkingLevel": "off"}, file)
+    return agent
+
+
+def chip_pixels(path):
+    """Orange (accent) pixels on the message field's text line: an attachment
+    chip has many, plain pasted text none (only the caret, a few)."""
+    _, _, bpp, rows = decode_png(path)
+    count = 0
+    for row in rows[712:748]:
+        for x in range(300, 1050):
+            r, g, b = row[x * bpp], row[x * bpp + 1], row[x * bpp + 2]
+            if r > 150 and g > 90 and b < 110 and r - b > 70:
+                count += 1
+    return count
 
 
 def handover_check(sandbox):
@@ -405,14 +517,19 @@ def lease_check(sandbox):
             lambda: (lease() or {}).get("pid") == terminal.pid, 15)), lease())
         check("lease: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
         subprocess.run([EXE, link], env=env, capture_output=True, timeout=30)
-        time.sleep(4)
-        started = [p for p, exe in descendants(app.pid).items() if exe.lower() == "node.exe"]
+        # The app saves the link's project before it looks at the lease; give
+        # that background check a moment after the save.
+        state = os.path.join(home, ".config", "pi-gpui", "state.json")
+        listed = lambda: os.path.isfile(state) and "lease project" in open(state, encoding="utf-8").read()
+        check("lease: the app took the link", bool(wait_for(listed, 15)))
+        time.sleep(1)
+        started = list(session_pis(app.pid))
         check("lease: a session a terminal pi holds is not opened", not started, started)
 
         terminal.terminate()
         terminal.wait(10)
         subprocess.run([EXE, link], env=env, capture_output=True, timeout=30)
-        pis = wait_for(lambda: {p: e for p, e in descendants(app.pid).items() if e.lower() == "node.exe"}, 25) or {}
+        pis = wait_for(lambda: session_pis(app.pid), 25) or {}
         check("lease: once the terminal pi is gone, the session opens", bool(pis), descendants(app.pid))
         held = wait_for(lambda: (lease() or {}).get("pid") in pis and lease(), 25) or lease()
         check("lease: the app's pi holds the session now", bool(held) and held.get("pid") in pis, held)
@@ -469,7 +586,7 @@ def refresh_check(sandbox):
 
     try:
         check("refresh: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
-        driver.send("wait 2500")
+        driver.settle(sandbox)
         before = sidebar("refresh-before")
         write_pi_session(agent, project, "made in a terminal pi")
         # The project row is the first one under "Projects"; its reload button
@@ -499,7 +616,7 @@ def gpui_check(sandbox):
         os.makedirs(folder)
     # One HOME for both, so the exe /gpui starts hands over to this app.
     env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
-               PI_GPUI_EXE=EXE, PI_SLOW_MODEL_MS="5000")
+               PI_GPUI_EXE=EXE, PI_SLOW_MODEL_MS="2500")
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     command = ["cmd.exe", "/d", "/c", shutil.which("pi"), "--offline", "--no-skills", "--no-prompt-templates",
@@ -535,19 +652,19 @@ def gpui_check(sandbox):
         saved = open(session, encoding="utf-8").read() if session else ""
         check("gpui: the run's reply was saved before handing over", "SLOW_REPLY_DONE" in saved, session)
 
-        pis = wait_for(lambda: {p: e for p, e in descendants(app.pid).items() if e.lower() == "node.exe"}, 30) or {}
+        pis = wait_for(lambda: session_pis(app.pid), 30) or {}
         check("gpui: the running app opens the session (its pi starts)", bool(pis), descendants(app.pid))
         lease_path = (session or "") + ".lease"
         lease = wait_for(lambda: os.path.isfile(lease_path) and json.load(open(lease_path)), 20) or {}
         check("gpui: ... that exact session, held by the app's pi",
               lease.get("pid") in pis and lease.get("appPid") == app.pid, lease)
-        # The exe /gpui started must have handed over and exited: no Pi GPUI
-        # newer than our app may still run (an older one may be the user's).
-        app_started = start_time(app.pid) or 0
-        newer = lambda: [pid for pid, (_, exe) in process_table().items() if exe.lower() == "pi-gpui.exe"
-                         and pid != app.pid and (start_time(pid) or 0) > app_started]
+        # The exe /gpui started (its command line holds this check's link) must
+        # have handed over and exited. Other checks may run apps meanwhile.
+        ours = lambda line: "pi-gpui://" in line and ("gpui+project" in line or "gpui%20project" in line)
+        second = lambda: [pid for pid, (_, exe) in process_table().items() if exe.lower() == "pi-gpui.exe"
+                          and pid != app.pid and ours(command_line(pid) or "")]
         check("gpui: no second app is left running (the launch handed over)",
-              wait_for(lambda: not newer(), 10), newer())
+              wait_for(lambda: not second(), 10), second())
     finally:
         if term:
             term.close()
@@ -588,7 +705,7 @@ def held_check(sandbox):
 
     try:
         check("held: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
-        driver.send("wait 2500")
+        driver.settle(sandbox)
         free = redness("held-free")
         command = ["cmd.exe", "/d", "/c", shutil.which("pi"), "--offline", "--no-skills", "--no-prompt-templates",
                    "--no-context-files", "-e", os.path.join(ROOT, "packages", "pi-gpui", "index.ts"),
@@ -671,7 +788,9 @@ class Automation:
     def __init__(self, folder):
         self.folder = folder
 
-    def send(self, *commands, timeout=30):
+    def send(self, *commands, timeout=30, gone=None):
+        """Runs automation commands and returns the answer lines. `gone`: a
+        test that the app has exited (it cannot answer then, e.g. after ctrl-q)."""
         done = os.path.join(self.folder, "done")
         if os.path.exists(done):
             os.remove(done)
@@ -679,36 +798,29 @@ class Automation:
         with open(staged, "w", encoding="utf-8") as file:
             file.write("\n".join(commands) + "\n")
         os.replace(staged, os.path.join(self.folder, "command"))
-        if not wait_for(lambda: os.path.exists(done), timeout, 0.1):
+        if not wait_for(lambda: os.path.exists(done) or (gone and gone()), timeout, 0.05) or not os.path.exists(done):
             return None
         time.sleep(0.05)
         return open(done, encoding="utf-8").read().strip().splitlines()
 
+    def settle(self, folder, quiet=1.0, timeout=15, interval=0.25):
+        """Waits until the window has not changed for `quiet` seconds (screenshots
+        compared as bytes, no decoding). Returns False if it never settles."""
+        path, previous, since = os.path.join(folder, f"settle-{id(self)}.png"), None, time.time()
+        end = time.time() + timeout
+        while time.time() < end:
+            self.send(f"shot {path}")
+            current = open(path, "rb").read() if os.path.isfile(path) else None
+            if not current or current != previous:
+                previous, since = current, time.time()
+            elif time.time() - since >= quiet:
+                return True
+            time.sleep(interval)
+        return False
 
-def main():
-    if not os.path.isfile(EXE):
-        sys.exit(f"{EXE} not found: run `cargo build --release` first")
-    if not shutil.which("pi"):
-        sys.exit("pi is not on PATH: this test checks that the app finds it there")
-    if HEADLESS:
-        join_headless_desktop()
-    else:
-        os.environ.pop("PI_GPUI_HEADLESS", None)
 
-    sandbox = tempfile.mkdtemp(prefix="pi-gpui-smoke-")
-    if ONLY:
-        checks = {"controls": window_controls_check, "crash": crash_check,
-                  "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
-                  "gpui": gpui_check, "held": held_check}
-        unknown = [name for name in ONLY if name not in checks]
-        if unknown:
-            sys.exit(f"unknown check(s) {unknown}; choose from {sorted(checks)}")
-        try:
-            for name in ONLY:
-                checks[name](sandbox)
-        finally:
-            shutil.rmtree(sandbox, ignore_errors=True)
-        return report()
+def main_check(sandbox):
+    """The first launch, on a project: start-up, automation, sessions, quitting."""
     home, auto, project = (os.path.join(sandbox, name) for name in ("home", "auto", "my project"))
     for folder in (home, auto, project):
         os.makedirs(folder)
@@ -716,7 +828,6 @@ def main():
     env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
     env.pop("PI_EXECUTABLE", None)
 
-    print(f"exe      {EXE}\nsandbox  {sandbox}\nheadless {HEADLESS}\n")
     log = open(log_path, "w")
     app = subprocess.Popen([EXE, project], env=env, stdout=log, stderr=subprocess.STDOUT)
     driver = Automation(auto)
@@ -772,13 +883,12 @@ def main():
                   paths and os.path.normcase(os.path.realpath(paths[0])) == os.path.normcase(os.path.realpath(project)), paths)
 
         # --- opening the app on a folder starts a session of its own
-        startup = wait_for(lambda: any(exe.lower() == "node.exe" for exe in descendants(app.pid).values())
-                           and descendants(app.pid), 20) or {}
+        startup = wait_for(lambda: session_pis(app.pid) and descendants(app.pid), 20) or {}
+        startup_pi = list(session_pis(app.pid))
         every_pi.update(startup)
-        check("opening a folder starts a session: pi (node.exe) runs under the app",
-              any(exe.lower() == "node.exe" for exe in startup.values()), startup)
+        check("opening a folder starts a session: pi (node.exe) runs under the app", bool(startup_pi), startup)
         # Let the new session finish loading, so the window is still for the click test.
-        driver.send("wait 2500")
+        driver.settle(sandbox)
 
         # --- a click really reaches the UI: the sidebar button hides and shows it
         def picture(name):
@@ -804,7 +914,7 @@ def main():
         def second_pi():
             now = descendants(app.pid)
             fresh = {pid: exe for pid, exe in now.items() if pid not in startup}
-            return fresh if any(exe.lower() == "node.exe" for exe in fresh.values()) else None
+            return fresh if any(pid in fresh for pid in session_pis(app.pid)) else None
 
         second = wait_for(second_pi, 20) or {}
         every_pi.update(second)
@@ -822,6 +932,12 @@ def main():
         after_paste = picture("paste-after")
         check("pasting a copied file changes the message field",
               before_paste and after_paste and before_paste != after_paste)
+        # A broken file paste falls back to the path as plain text (the
+        # clipboard has that too), which changes the field as well: tell them
+        # apart by the chip's accent colour.
+        chips = (chip_pixels(os.path.join(sandbox, "paste-before.png")),
+                 chip_pixels(os.path.join(sandbox, "paste-after.png")))
+        check("... as an attachment chip, not the file's path as text", chips[1] - chips[0] > 60, chips)
 
         everyone = {app.pid, *descendants(app.pid)}
         # Windows' input-language indicator lives in the app's process (shown on a
@@ -841,23 +957,15 @@ def main():
               wait_for(lambda: not any(alive(pid) for pid in second), 15),
               [pid for pid in second if alive(pid)])
         # Only pi itself: `startup` may also hold short-lived helpers (the update check's curl.exe).
-        startup_pi = [pid for pid, exe in startup.items() if exe.lower() == "node.exe"]
         check("the other session's pi keeps running", startup_pi and all(alive(pid) for pid in startup_pi),
               [pid for pid in startup_pi if not alive(pid)])
 
         # --- quitting with a session open stops its pi too
-        driver.send("key ctrl-q")
+        driver.send("key ctrl-q", gone=lambda: app.poll() is not None)
         check("ctrl-q quits the app", wait_for(lambda: app.poll() is not None, 15))
         check("quitting leaves no pi process behind",
               wait_for(lambda: not any(alive(pid) for pid in every_pi), 15),
               [pid for pid in every_pi if alive(pid)])
-        window_controls_check(sandbox)
-        crash_check(sandbox)
-        handover_check(sandbox)
-        lease_check(sandbox)
-        refresh_check(sandbox)
-        gpui_check(sandbox)
-        held_check(sandbox)
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
@@ -865,8 +973,63 @@ def main():
             if alive(pid):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
         log.close()
-        shutil.rmtree(sandbox, ignore_errors=True)
 
+
+CHECKS = {"main": main_check, "controls": window_controls_check, "crash": crash_check,
+          "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
+          "gpui": gpui_check, "held": held_check}
+
+
+def run_check(name, sandbox):
+    """One check in this thread: (name, its output lines, seconds)."""
+    if HEADLESS:
+        join_headless_desktop()  # the desktop is per thread
+    _output.lines = []
+    started = time.time()
+    try:
+        CHECKS[name](sandbox)
+    except Exception as error:  # a bug in the check itself
+        check(f"{name}: the check ran to the end", False, repr(error))
+    return name, _output.lines, time.time() - started
+
+
+def main():
+    if not os.path.isfile(EXE):
+        sys.exit(f"{EXE} not found: run `cargo build --release` first")
+    if not shutil.which("pi"):
+        sys.exit("pi is not on PATH: this test checks that the app finds it there")
+    names = ONLY or list(CHECKS)
+    unknown = [name for name in names if name not in CHECKS]
+    if unknown:
+        sys.exit(f"unknown check(s) {unknown}; choose from {sorted(CHECKS)}")
+    if HEADLESS:
+        join_headless_desktop()
+    else:
+        os.environ.pop("PI_GPUI_HEADLESS", None)
+
+    sandbox = tempfile.mkdtemp(prefix="pi-gpui-smoke-")
+    print(f"exe      {EXE}\nsandbox  {sandbox}\nheadless {HEADLESS}\n", flush=True)
+    started = time.time()
+    try:
+        # Each check has its own HOME, automation folder and app, so they can
+        # run side by side; --serial runs them one after another.
+        print(f"started {len(names)} group(s){' one by one' if SERIAL else ' side by side'}: {', '.join(names)}",
+              flush=True)
+        with ThreadPoolExecutor(1 if SERIAL else len(names)) as pool:
+            running = [pool.submit(run_check, name, sandbox) for name in names]
+            # Each group is printed as soon as it is done, with its time.
+            for done, future in enumerate(as_completed(running), 1):
+                name, lines, seconds = future.result()
+                failed = sum(line.startswith("FAIL") for line in lines)
+                print(f"--- {name}: {seconds:.1f} s, {len(lines) - failed} passed"
+                      + (f", {failed} FAILED" if failed else "") + f"   [{done}/{len(names)} at {time.time() - started:.1f} s]",
+                      flush=True)
+                for line in lines:
+                    if VERBOSE or line.startswith("FAIL"):
+                        print(line)
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+    print(f"\n{len(names)} check group(s) in {time.time() - started:.1f} s")
     report()
 
 

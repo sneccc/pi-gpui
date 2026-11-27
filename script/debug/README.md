@@ -30,6 +30,22 @@ shot` with no path writes `.scratch/shots/<time>.png`.
 The app runs in a sandbox (`.scratch/headless/home` as `HOME`), so it never
 touches your real projects and never takes over launches of your real app.
 
+## A user test with a fake model
+
+`scripted-model.ts` replays steps from a JSON file, so a whole user flow runs
+free and offline. A `{"tools": [...]}` step makes several tool calls in one
+reply. Example, 50 background subagents at once (about 10 s):
+
+    # steps: [{"tools": [50 x {"tool": "Agent", "args": {..., "run_in_background": true}}]},
+    #         {"text": "Found a random fact."}]
+    python -I script/debug/app.py start --fresh --scripted steps.json \
+        --extension C:\Users\Daniel\source\pi-durable-subagents "P:\some project"
+    python -I script/debug/app.py do "wait 2500" "key ctrl-alt-a" "type use 50 subagents" "key enter"
+
+Then read `.scratch/headless/home/.cache/pi-gpui/subagents/*/fleet.json`, the
+app log (`.scratch/headless/home/.cache/pi-gpui/logs/pi-gpui.log`) and the
+session in `.scratch/headless/agent/sessions/`.
+
 ## A real terminal pi, headless
 
 `terminal.py` runs any terminal program in a hidden pseudo console (ConPTY via ctypes, no

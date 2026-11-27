@@ -8,6 +8,7 @@
  * steps.json is a list, one step per model reply, in order:
  *     {"text": "hello"}                          a plain answer
  *     {"tool": "ask_user_question", "args": {...}}  calls a tool (and stops for its result)
+ *     {"tools": [{"tool": "Agent", "args": {...}}, ...]}  several tool calls in one reply
  *     {"echo": "GOT: "}                          answers with the last tool result's text
  * After the last step it repeats the last one. Each step may also set
  * "delayMs" to answer slowly.
@@ -15,7 +16,8 @@
 import { readFileSync } from "node:fs";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 
-type Step = { text?: string; tool?: string; args?: Record<string, unknown>; echo?: string; delayMs?: number };
+type Call = { tool: string; args?: Record<string, unknown> };
+type Step = { text?: string; tool?: string; args?: Record<string, unknown>; tools?: Call[]; echo?: string; delayMs?: number };
 
 /** The text of the newest tool result in the conversation. */
 function lastToolResult(context: any): string {
@@ -39,6 +41,10 @@ export default function (pi: any) {
 		next += 1;
 		faux.appendResponses([reply]);
 		if (step.delayMs) await new Promise((resolve) => setTimeout(resolve, step.delayMs));
+		if (step.tools) {
+			const calls = step.tools.map((call) => fauxToolCall(call.tool, call.args ?? {}));
+			return fauxAssistantMessage(calls, { stopReason: "toolUse" });
+		}
 		if (step.tool) {
 			return fauxAssistantMessage(fauxToolCall(step.tool, step.args ?? {}), { stopReason: "toolUse" });
 		}

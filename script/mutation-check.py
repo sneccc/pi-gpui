@@ -128,7 +128,23 @@ MUTATIONS += [
     ),
 ]
 
+MUTATIONS += [
+    (
+        "a subagent's tool calls never get their results",
+        "src/subagents.rs",
+        "                    *slot = output;",
+        "                    let _ = output;",
+    ),
+]
+
 E2E_MUTATIONS = [
+    (
+        "picking a subagent does not change the main area",
+        "src/subagents.rs",
+        "        self.viewing = summary.map(|summary| {",
+        "        self.viewing = summary.filter(|_| false).map(|summary| {",
+        "subagents",
+    ),
     (
         "options a plugin marks selected are not picked when the form opens",
         "src/chat/plugin_form.rs",

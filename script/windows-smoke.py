@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit,images,grill] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template,edit,images,grill,subagents] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -768,6 +768,77 @@ def grill_check(sandbox):
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
 
 
+DURABLE = os.environ.get("PI_DURABLE_SUBAGENTS") or os.path.join(os.path.expanduser("~"), "source", "pi-durable-subagents")
+
+
+def subagents_check(sandbox):
+    """The Subagents panel with the real pi-durable-subagents extension: pi
+    delegates to a subagent, the panel lists it, a click shows its
+    conversation, and Back returns to the session. Needs a checkout of the
+    extension with the Pi GPUI publisher (src/gpui.ts) at PI_DURABLE_SUBAGENTS
+    (default ~/source/pi-durable-subagents); skipped without one."""
+    if not os.path.isfile(os.path.join(DURABLE, "src", "gpui.ts")):
+        say(f"skip  subagents: no pi-durable-subagents with src/gpui.ts at {DURABLE}")
+        return
+    home, auto, project = (os.path.join(sandbox, name) for name in ("home14", "auto14", "subagents project"))
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    agent = fake_pi_agent(sandbox, "agent14", "scripted-model.ts")
+    settings_path = os.path.join(agent, "settings.json")
+    settings = json.load(open(settings_path))
+    settings["extensions"].append(DURABLE)
+    json.dump(settings, open(settings_path, "w"))
+    steps = os.path.join(sandbox, "subagents-steps.json")
+    json.dump([
+        {"tool": "Agent", "args": {"prompt": "Find the auth code.", "description": "find auth",
+                                  "subagent_type": "Explore", "name": "auth-scout", "run_in_background": False}},
+        {"text": "Found **src/auth.rs**.", "delayMs": 1500},
+        {"text": "Done."}], open(steps, "w"))
+    env = dict(sandbox_env(home, auto), PI_CODING_AGENT_DIR=agent, PI_SCRIPTED_MODEL=steps)
+    app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    driver = Automation(auto)
+    published = os.path.join(home, ".cache", "pi-gpui", "subagents")
+
+    def fleet():
+        for folder, _, names in os.walk(published):
+            if "fleet.json" in names:
+                try:
+                    return json.load(open(os.path.join(folder, "fleet.json"), encoding="utf-8"))
+                except (OSError, ValueError):
+                    return None
+        return None
+
+    def main_area(name):
+        path = os.path.join(sandbox, name + ".png")
+        driver.send("move 640 400", "wait 200", f"shot {path}")
+        if not os.path.isfile(path):
+            return None
+        _, _, bpp, rows = decode_png(path)
+        return [bytes(row[300 * bpp:780 * bpp]) for row in rows[80:700]]
+
+    try:
+        check("subagents: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        driver.settle(sandbox)
+        driver.send("key ctrl-alt-a", "wait 300", "type find the auth code", "key enter")
+        done = wait_for(lambda: any(a.get("status") == "completed" for a in (fleet() or {}).get("agents", [])), 30)
+        check("subagents: the extension publishes the subagent for the app", bool(done), fleet())
+        names = [a.get("name") for a in (fleet() or {}).get("agents", [])]
+        check("subagents: ... named and done", names == ["auth-scout"], names)
+        driver.settle(sandbox, quiet=0.6)
+        chat = main_area("subagents-chat")
+        # The panel is the right dock: Main is the first row, the subagent the second.
+        driver.send("move 1000 150", "wait 200", "click 1000 150", "wait 800")
+        shown = main_area("subagents-shown")
+        check("subagents: clicking it shows its conversation instead of the chat", chat and shown and shown != chat)
+        driver.send("move 1000 96", "wait 200", "click 1000 96", "wait 800")
+        driver.settle(sandbox, quiet=0.5)
+        back = main_area("subagents-back")
+        check("subagents: Main returns to the session", back == chat)
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+
+
 def handover_check(sandbox):
     """A fourth launch, with a HOME of its own: later launches hand their
     folder or pi-gpui:// link to the running app and exit."""
@@ -1330,7 +1401,7 @@ CHECKS = {"main": main_check, "controls": window_controls_check, "crash": crash_
           "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
           "gpui": gpui_check, "held": held_check, "ask": ask_check,
           "template": template_check, "edit": edit_check,
-          "images": images_check, "grill": grill_check}
+          "images": images_check, "grill": grill_check, "subagents": subagents_check}
 
 
 def run_check(name, sandbox):

@@ -1,7 +1,7 @@
 """Debug Pi GPUI on Windows without it popping up: start it headless in a
 sandbox, drive it, look at it, stop it.
 
-    python -I script/debug/app.py start [--fresh] [--show] [--sandbox-pi] [--plugin DIR]... [--scripted STEPS.json] [folder]
+    python -I script/debug/app.py start [--fresh] [--show] [--sandbox-pi] [--plugin DIR]... [--scripted STEPS.json [--extension PATH]...] [folder]
     python -I script/debug/app.py session FOLDER "first message"   a session as a terminal pi writes it
     python -I script/debug/app.py do "key ctrl-n" "wait 500" shot
     python -I script/debug/app.py status            process tree and windows
@@ -19,7 +19,8 @@ agent folder (.scratch/headless/agent: no logins, no extensions, no real
 sessions), and `session` writes sessions there for the app to find.
 `--plugin DIR` installs a plugin (e.g. examples/plugins/ask) into the sandbox;
 `--scripted STEPS.json` makes pi's model the scripted fake model
-(script/debug/scripted-model.ts) and implies `--sandbox-pi`. `do` takes automation commands (see
+(script/debug/scripted-model.ts) and implies `--sandbox-pi`; `--extension PATH`
+(with `--scripted`) loads one more pi extension or package into that pi. `do` takes automation commands (see
 src/automation.rs); a bare `shot` saves to .scratch/shots/ and prints the path.
 The window commands join the hidden desktop themselves.
 """
@@ -100,8 +101,9 @@ def send(*commands, timeout=60):
 def start(args):
     fresh, show = "--fresh" in args, "--show" in args
     sandbox_pi = "--sandbox-pi" in args or "--scripted" in args
-    valued = {"--plugin", "--scripted"}  # options that take the next argument
+    valued = {"--plugin", "--scripted", "--extension"}  # options that take the next argument
     plugins = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--plugin"]
+    extensions = [os.path.abspath(args[i + 1]) for i, arg in enumerate(args[:-1]) if arg == "--extension"]
     scripted = next((args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--scripted"), None)
     folders = [os.path.abspath(arg) for i, arg in enumerate(args)
                if not arg.startswith("--") and (i == 0 or args[i - 1] not in valued)]
@@ -126,7 +128,7 @@ def start(args):
     if scripted:
         # pi's default model becomes the scripted fake model (scripted-model.ts).
         with open(os.path.join(AGENT, "settings.json"), "w", encoding="utf-8") as file:
-            json.dump({"extensions": [os.path.join(ROOT, "script", "debug", "scripted-model.ts")],
+            json.dump({"extensions": [os.path.join(ROOT, "script", "debug", "scripted-model.ts"), *extensions],
                        "defaultProvider": "faux", "defaultModel": "faux-1", "defaultThinkingLevel": "off"}, file)
         env["PI_SCRIPTED_MODEL"] = os.path.abspath(scripted)
     for plugin in plugins:

@@ -346,6 +346,12 @@ pub struct TextInput {
     /// Painted chip rectangles (window coordinates) and their attachment.
     chip_bounds: Vec<(Bounds<Pixels>, usize)>,
     hovered_chip: Option<usize>,
+    /// Sent messages, oldest first: Up in an empty field brings back the
+    /// latest, like a shell (message composer only).
+    history: Vec<SharedString>,
+    /// Which history entry the field shows. Only while the text is still
+    /// exactly that entry: after an edit Up and Down move the cursor again.
+    history_index: Option<usize>,
 }
 
 impl TextInput {
@@ -375,7 +381,66 @@ impl TextInput {
             attachments: Vec::new(),
             chip_bounds: Vec::new(),
             hovered_chip: None,
+            history: Vec::new(),
+            history_index: None,
         }
+    }
+
+    /// The messages Up and Down step through, oldest first.
+    pub fn set_history(&mut self, history: Vec<SharedString>) {
+        self.history_index = self
+            .history_index
+            .filter(|index| history.get(*index) == self.history.get(*index));
+        self.history = history;
+    }
+
+    /// The history entry the field shows unedited, if any.
+    fn shown_history(&self) -> Option<usize> {
+        self.history_index
+            .filter(|index| self.history.get(*index) == Some(&self.content))
+    }
+
+    /// Up in an empty field, or on an unedited recalled message: the message
+    /// before it. Returns whether the key was used for the history.
+    fn recall_older(&mut self, cx: &mut Context<Self>) -> bool {
+        let step = history_step(
+            self.history.len(),
+            self.shown_history(),
+            self.content.is_empty(),
+            true,
+        );
+        self.apply_history_step(step, cx)
+    }
+
+    /// Down on an unedited recalled message: the next one, or an empty field
+    /// after the newest. Returns whether the key was used for the history.
+    fn recall_newer(&mut self, cx: &mut Context<Self>) -> bool {
+        let step = history_step(
+            self.history.len(),
+            self.shown_history(),
+            self.content.is_empty(),
+            false,
+        );
+        self.apply_history_step(step, cx)
+    }
+
+    fn apply_history_step(&mut self, step: HistoryStep, cx: &mut Context<Self>) -> bool {
+        match step {
+            HistoryStep::Ignore => false,
+            HistoryStep::Stay => true,
+            HistoryStep::Show(index) => {
+                self.show_history(index, cx);
+                true
+            }
+        }
+    }
+
+    fn show_history(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        let text = index
+            .and_then(|index| self.history.get(index).cloned())
+            .unwrap_or_default();
+        self.set_text(text, cx);
+        self.history_index = index;
     }
 
     /// Files and images can be pasted or dropped in; they become chips and
@@ -900,6 +965,9 @@ impl TextInput {
             cx.propagate();
             return;
         }
+        if self.recall_older(cx) {
+            return;
+        }
         match self.vertical_target(-1.) {
             Some(target) => {
                 // Keep the column set by vertical_target across consecutive moves.
@@ -914,6 +982,9 @@ impl TextInput {
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
         if self.single_line || self.vertical_passthrough {
             cx.propagate();
+            return;
+        }
+        if self.recall_newer(cx) {
             return;
         }
         match self.vertical_target(1.) {
@@ -1817,9 +1888,66 @@ pub(crate) fn paragraph_range_at(text: &str, offset: usize) -> Range<usize> {
     start..end
 }
 
+/// What Up or Down does with the message history.
+#[derive(Debug, PartialEq, Eq)]
+enum HistoryStep {
+    /// Not a history move: the key moves the cursor as usual.
+    Ignore,
+    /// A history move with nowhere to go (Up on the oldest message).
+    Stay,
+    /// Show this entry, or an empty field (`None`, Down after the newest).
+    Show(Option<usize>),
+}
+
+/// `shown`: the entry the field shows unedited, if any. History moves only
+/// start from an empty field (Up) and continue while a recalled message is
+/// untouched, so editing text with the arrow keys works as before.
+fn history_step(len: usize, shown: Option<usize>, empty: bool, older: bool) -> HistoryStep {
+    match (shown, older) {
+        (Some(0), true) => HistoryStep::Stay,
+        (Some(index), true) => HistoryStep::Show(Some(index - 1)),
+        (Some(index), false) => HistoryStep::Show(Some(index + 1).filter(|next| *next < len)),
+        (None, true) if empty && len > 0 => HistoryStep::Show(Some(len - 1)),
+        (None, _) => HistoryStep::Ignore,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn up_in_an_empty_field_walks_back_through_sent_messages() {
+        // Three messages: 0 oldest, 2 newest.
+        assert_eq!(
+            history_step(3, None, true, true),
+            HistoryStep::Show(Some(2))
+        );
+        assert_eq!(
+            history_step(3, Some(2), false, true),
+            HistoryStep::Show(Some(1))
+        );
+        assert_eq!(history_step(3, Some(0), false, true), HistoryStep::Stay);
+        // Down goes forward, and past the newest back to an empty field.
+        assert_eq!(
+            history_step(3, Some(1), false, false),
+            HistoryStep::Show(Some(2))
+        );
+        assert_eq!(
+            history_step(3, Some(2), false, false),
+            HistoryStep::Show(None)
+        );
+    }
+
+    #[test]
+    fn arrows_edit_text_as_usual_outside_the_history() {
+        // Text the user typed (or edited after recalling): no history move.
+        assert_eq!(history_step(3, None, false, true), HistoryStep::Ignore);
+        assert_eq!(history_step(3, None, false, false), HistoryStep::Ignore);
+        // Down in an empty field, and Up with no messages yet.
+        assert_eq!(history_step(3, None, true, false), HistoryStep::Ignore);
+        assert_eq!(history_step(0, None, true, true), HistoryStep::Ignore);
+    }
 
     const TEXT: &str = "fix the größe bug,  now\nsecond line";
 

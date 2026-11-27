@@ -88,7 +88,7 @@ def run_plugin(name, sandbox):
     steps = os.path.join(sandbox, f"{name}-steps.json")
     json.dump(scenario["steps"], open(steps, "w"))
     # USERPROFILE too: node's home folder, where Secrets saves the value.
-    env = dict(os.environ, HOME=home, USERPROFILE=home, PI_GPUI_AUTOMATION=auto,
+    env = dict(smoke.offline_environ(), HOME=home, USERPROFILE=home, PI_GPUI_AUTOMATION=auto,
                PI_CODING_AGENT_DIR=agent, PI_SCRIPTED_MODEL=steps)
     env.pop("PI_EXECUTABLE", None)
     started = time.time()

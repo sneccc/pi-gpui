@@ -27,6 +27,7 @@ import ctypes
 import ctypes.wintypes as wt
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,7 @@ AGENT = os.path.join(SANDBOX, "agent")
 SHOTS = os.path.join(SCRATCH, "shots")
 EXE = os.environ.get("PI_GPUI_EXE") or os.path.join(ROOT, "target", "release", "pi-gpui.exe")
 DESKTOP = "pi-gpui-headless"  # src/platform.rs HEADLESS_DESKTOP
+CREDENTIAL = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|^(AWS|AZURE|GOOGLE_APPLICATION)_", re.I)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -116,6 +118,9 @@ def start(args):
             os.remove(os.path.join(AUTO, stale))
     env = dict(os.environ, HOME=HOME, PI_GPUI_AUTOMATION=AUTO)
     if sandbox_pi:
+        # A sandboxed pi must never reach a real model: without credentials a
+        # missing fake model fails loudly instead of spending money.
+        env = {name: value for name, value in env.items() if not CREDENTIAL.search(name)}
         os.makedirs(AGENT, exist_ok=True)
         env["PI_CODING_AGENT_DIR"] = AGENT
     if scripted:

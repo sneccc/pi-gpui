@@ -12,7 +12,7 @@ sandbox (own HOME, own project) and checks what a user would notice:
   - pasting a file copied in Explorer does something (this overwrites the clipboard)
   - a second launch (with a folder, a pi-gpui:// link, or nothing) hands over and exits
 
-    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask] [path\\to\\pi-gpui.exe]
+    python -I script/windows-smoke.py [--show] [--serial] [--verbose] [--only main,controls,crash,handover,lease,refresh,gpui,held,ask,template] [path\\to\\pi-gpui.exe]
 
 The app runs headless (PI_GPUI_HEADLESS=1: its windows sit on a hidden
 desktop, nothing pops up); --show puts them on your screen to watch.
@@ -26,6 +26,7 @@ checks passed. See docs/WINDOWS_UI_CHECKS.md.
 import ctypes
 import ctypes.wintypes as wt
 import json
+import re
 import os
 import shutil
 import struct
@@ -84,6 +85,17 @@ def check(name, ok, detail=""):
     if not ok:
         failures.append(name)
     return ok
+
+
+CREDENTIAL = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|^(AWS|AZURE|GOOGLE_APPLICATION)_", re.I)
+
+
+def offline_environ():
+    """os.environ without credentials (API keys, tokens). The pi processes the
+    tests start must never reach a real model: if the fake model fails to
+    answer, pi would fall back to any provider whose key it finds, and spend
+    money. Without keys it fails loudly instead."""
+    return {name: value for name, value in os.environ.items() if not CREDENTIAL.search(name)}
 
 
 def wait_for(predicate, seconds, interval=0.2):
@@ -315,7 +327,7 @@ def window_controls_check(sandbox):
     home, auto = os.path.join(sandbox, "home2"), os.path.join(sandbox, "auto2")
     os.makedirs(home)
     os.makedirs(auto)
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -369,7 +381,7 @@ def crash_check(sandbox):
     for folder in (home, auto, project):
         os.makedirs(folder)
     agent = fake_pi_agent(sandbox, "agent3")
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
                PI_SLOW_MODEL_MS="60000")
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -425,7 +437,7 @@ def ask_check(sandbox):
             {"question": "Which colour?", "options": [{"label": "Red"}, {"label": "Blue"}]},
             {"question": "Any comment?"}]}},
             {"echo": "GOT: "}], file)
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent, PI_SCRIPTED_MODEL=steps)
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent, PI_SCRIPTED_MODEL=steps)
     env.pop("PI_EXECUTABLE", None)
     log_path = os.path.join(sandbox, "ask-app.log")
     log = open(log_path, "w")
@@ -454,10 +466,29 @@ def ask_check(sandbox):
         text = transcript()
         check("ask: pi gets the answers from the form",
               bool(got) and "Blue" in text and "looks good" in text, text[-400:])
+        check("ask: only the fake model answered", only_fake_model(text), models_used(text))
     finally:
         if app.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
         log.close()
+
+
+def models_used(transcript):
+    """{provider/model} of the assistant messages in session JSON lines."""
+    used = set()
+    for line in transcript.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        message = entry.get("message") or {}
+        if entry.get("type") == "message" and message.get("role") == "assistant":
+            used.add(f"{message.get('provider')}/{message.get('model')}")
+    return used
+
+
+def only_fake_model(transcript):
+    return models_used(transcript) <= {"faux/faux-1"}
 
 
 def accent_pixels(path, left=300, top=80, right=1150, bottom=780):
@@ -501,6 +532,58 @@ def chip_pixels(path):
     return count
 
 
+def template_check(sandbox):
+    """The plugin template of the project skill (.pi/skills/pi-gpui-plugins/
+    assets/template) still works: it loads, its shortcut inserts text, and a
+    pi call of its tool shows a field whose answer reaches pi."""
+    home, auto, project = (os.path.join(sandbox, name) for name in ("home10", "auto10", "template project"))
+    for folder in (home, auto, project):
+        os.makedirs(folder)
+    template = os.path.join(ROOT, ".pi", "skills", "pi-gpui-plugins", "assets", "template")
+    manifest = json.load(open(os.path.join(template, "plugin.json"), encoding="utf-8"))
+    shutil.copytree(template, os.path.join(home, ".config", "pi-gpui", "plugins", manifest["id"]))
+    tool = manifest["contributes"]["toolEvents"][0]
+    agent = fake_pi_agent(sandbox, "agent10", "scripted-model.ts")
+    steps = os.path.join(sandbox, "template-steps.json")
+    json.dump([{"tool": tool, "args": {"question": "What should I call you?"}}, {"echo": "GOT: "}],
+              open(steps, "w", encoding="utf-8"))
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent, PI_SCRIPTED_MODEL=steps)
+    env.pop("PI_EXECUTABLE", None)
+    log_path = os.path.join(sandbox, "template-app.log")
+    log = open(log_path, "w")
+    app = subprocess.Popen([EXE, project], env=env, stdout=log, stderr=subprocess.STDOUT)
+    driver = Automation(auto)
+
+    def transcript():
+        return "".join(open(os.path.join(folder, name), encoding="utf-8").read()
+                       for folder, _, names in os.walk(os.path.join(agent, "sessions"))
+                       for name in names if name.endswith(".jsonl"))
+
+    try:
+        check("template: the app opens its window", bool(wait_for(lambda: app_window(app.pid), 20)))
+        check("template: the plugin loads", bool(wait_for(
+            lambda: f"plugin(s): {manifest['id']}" in open(log_path, errors="replace").read(), 15)))
+        driver.settle(sandbox)
+        empty = chat_accent(driver, sandbox)
+        # The manifest's shortcut (cmd- is ctrl- on Windows) inserts text: the
+        # message field gets more text pixels. Checked through the transcript
+        # below instead of pixels: send the inserted text as the prompt.
+        keys = manifest["contributes"]["commands"][0]["keybinding"].replace("cmd-", "ctrl-")
+        driver.send(f"key {keys}", "wait 500", "key enter")
+        check("template: the shortcut inserts its text (sent as the prompt)",
+              bool(wait_for(lambda: "Hello from a plugin" in transcript(), 15)), transcript()[-300:])
+        check("template: pi calls the template's tool", bool(wait_for(lambda: tool in transcript(), 15)))
+        check("template: its field appears in the tool call", wait_for_form(driver, sandbox, empty, more=150))
+        driver.send("type Daniel", "key enter")
+        check("template: the answer reaches pi",
+              bool(wait_for(lambda: "GOT: The user's name is Daniel." in transcript(), 15)), transcript()[-300:])
+        check("template: only the fake model answered", only_fake_model(transcript()), models_used(transcript()))
+    finally:
+        if app.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.pid)], capture_output=True)
+        log.close()
+
+
 def handover_check(sandbox):
     """A fourth launch, with a HOME of its own: later launches hand their
     folder or pi-gpui:// link to the running app and exit."""
@@ -509,7 +592,7 @@ def handover_check(sandbox):
     third_project = os.path.join(sandbox, "third project")
     for folder in (home, auto, second_project, third_project):
         os.makedirs(folder)
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     strays = []
@@ -582,7 +665,7 @@ def lease_check(sandbox):
         except (OSError, ValueError):
             return None
 
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
     env.pop("PI_EXECUTABLE", None)
     quote = lambda path: "".join(c if c.isalnum() or c in "-._~" else "%%%02X" % ord(c)
                                  for c in path.replace(os.sep, "/"))
@@ -649,7 +732,7 @@ def refresh_check(sandbox):
     for folder in (home, auto, agent, project):
         os.makedirs(folder)
     # PI_CODING_AGENT_DIR: the app and its pi read sessions from the sandbox.
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent)
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent)
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     driver = Automation(auto)
@@ -694,7 +777,7 @@ def gpui_check(sandbox):
     for folder in (home, auto, agent, project):
         os.makedirs(folder)
     # One HOME for both, so the exe /gpui starts hands over to this app.
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent,
                PI_GPUI_EXE=EXE, PI_SLOW_MODEL_MS="2500")
     env.pop("PI_EXECUTABLE", None)
     app = subprocess.Popen([EXE], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -765,7 +848,7 @@ def held_check(sandbox):
     for folder in (home, auto, agent, project):
         os.makedirs(folder)
     session = write_pi_session(agent, project, "held by a terminal pi")
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent)
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto, PI_CODING_AGENT_DIR=agent)
     env.pop("PI_EXECUTABLE", None)
     # The project's own new session is the first row; the listed one the second.
     app = subprocess.Popen([EXE, project], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -904,7 +987,7 @@ def main_check(sandbox):
     for folder in (home, auto, project):
         os.makedirs(folder)
     log_path = os.path.join(sandbox, "app.log")
-    env = dict(os.environ, HOME=home, PI_GPUI_AUTOMATION=auto)
+    env = dict(offline_environ(), HOME=home, PI_GPUI_AUTOMATION=auto)
     env.pop("PI_EXECUTABLE", None)
 
     log = open(log_path, "w")
@@ -981,7 +1064,9 @@ def main_check(sandbox):
         hidden = picture("hidden")
         check("the click changed the window (sidebar hidden)", before and hidden and hidden != before)
         # Move the pointer off the button so its hover highlight is gone again.
-        driver.send("click 23 18", "move 700 300", "wait 300")
+        driver.send("click 23 18", "move 700 300")
+        # Under load the redraw can lag: compare once the window is still again.
+        driver.settle(sandbox, quiet=0.5)
         check("a second click restores the window exactly", picture("after") == before)
 
         # --- ctrl-n starts one more pi, and nothing pops up
@@ -1056,7 +1141,8 @@ def main_check(sandbox):
 
 CHECKS = {"main": main_check, "controls": window_controls_check, "crash": crash_check,
           "handover": handover_check, "lease": lease_check, "refresh": refresh_check,
-          "gpui": gpui_check, "held": held_check, "ask": ask_check}
+          "gpui": gpui_check, "held": held_check, "ask": ask_check,
+          "template": template_check}
 
 
 def run_check(name, sandbox):
@@ -1107,7 +1193,10 @@ def main():
                     if VERBOSE or line.startswith("FAIL"):
                         print(line)
     finally:
-        shutil.rmtree(sandbox, ignore_errors=True)
+        if os.environ.get("SMOKE_KEEP") and failures:
+            print(f"kept the sandbox for inspection: {sandbox}")
+        else:
+            shutil.rmtree(sandbox, ignore_errors=True)
     print(f"\n{len(names)} check group(s) in {time.time() - started:.1f} s")
     report()
 

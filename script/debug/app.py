@@ -1,7 +1,8 @@
 """Debug Pi GPUI on Windows without it popping up: start it headless in a
 sandbox, drive it, look at it, stop it.
 
-    python -I script/debug/app.py start [--fresh] [--show] [folder]
+    python -I script/debug/app.py start [--fresh] [--show] [--sandbox-pi] [folder]
+    python -I script/debug/app.py session FOLDER "first message"   a session as a terminal pi writes it
     python -I script/debug/app.py do "key ctrl-n" "wait 500" shot
     python -I script/debug/app.py status            process tree and windows
     python -I script/debug/app.py hittest [x ...]   WM_NCHITTEST along the title bar
@@ -13,7 +14,9 @@ sandbox, drive it, look at it, stop it.
 PI_GPUI_HEADLESS=1, so its windows sit on a hidden desktop: nothing shows,
 nothing takes the focus, and `shot` still works. `--show` puts it on screen.
 The sandbox is .scratch/headless (HOME, automation folder, app.log); it is
-kept between runs unless `--fresh`. `do` takes automation commands (see
+kept between runs unless `--fresh`. `--sandbox-pi` also gives pi its own
+agent folder (.scratch/headless/agent: no logins, no extensions, no real
+sessions), and `session` writes sessions there for the app to find. `do` takes automation commands (see
 src/automation.rs); a bare `shot` saves to .scratch/shots/ and prints the path.
 The window commands join the hidden desktop themselves.
 """
@@ -31,6 +34,7 @@ SCRATCH = os.path.join(ROOT, ".scratch")
 SANDBOX = os.path.join(SCRATCH, "headless")
 HOME, AUTO, LOG = (os.path.join(SANDBOX, name) for name in ("home", "auto", "app.log"))
 STATE = os.path.join(SANDBOX, "app.json")
+AGENT = os.path.join(SANDBOX, "agent")
 SHOTS = os.path.join(SCRATCH, "shots")
 EXE = os.environ.get("PI_GPUI_EXE") or os.path.join(ROOT, "target", "release", "pi-gpui.exe")
 DESKTOP = "pi-gpui-headless"  # src/platform.rs HEADLESS_DESKTOP
@@ -90,6 +94,7 @@ def send(*commands, timeout=60):
 
 def start(args):
     fresh, show = "--fresh" in args, "--show" in args
+    sandbox_pi = "--sandbox-pi" in args
     folders = [os.path.abspath(arg) for arg in args if not arg.startswith("--")]
     if state().get("pid") and alive(state()["pid"]):
         sys.exit(f"already running (pid {state()['pid']}): stop it first")
@@ -103,6 +108,9 @@ def start(args):
         if os.path.exists(os.path.join(AUTO, stale)):
             os.remove(os.path.join(AUTO, stale))
     env = dict(os.environ, HOME=HOME, PI_GPUI_AUTOMATION=AUTO)
+    if sandbox_pi:
+        os.makedirs(AGENT, exist_ok=True)
+        env["PI_CODING_AGENT_DIR"] = AGENT
     env.pop("PI_GPUI_HEADLESS", None)
     if not show:
         env["PI_GPUI_HEADLESS"] = "1"
@@ -114,7 +122,7 @@ def start(args):
                                creationflags=flags | 0x01000000)  # CREATE_BREAKAWAY_FROM_JOB
     except OSError:
         app = subprocess.Popen([EXE, *folders], env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
-    json.dump({"pid": app.pid, "headless": not show}, open(STATE, "w"))
+    json.dump({"pid": app.pid, "headless": not show, "sandbox_pi": sandbox_pi}, open(STATE, "w"))
     answer = send("wait 1", timeout=30)
     if not answer or app.poll() is not None:
         print(open(LOG, errors="replace").read())
@@ -336,8 +344,30 @@ def dialog(args):
     print("chose", os.path.abspath(args[0]))
 
 
+def session(args):
+    """Writes a session for FOLDER as pi does, in compact JSON (the app's quick
+    scan looks for `\"role\":\"user\"`), where a `--sandbox-pi` app looks."""
+    if len(args) != 2:
+        sys.exit('usage: session FOLDER "first message"')
+    project, text = os.path.abspath(args[0]), args[1]
+    encoded = "--" + project.lstrip("/" + chr(92)).replace("/", "-").replace(chr(92), "-").replace(":", "-") + "--"
+    folder = os.path.join(AGENT, "sessions", encoded)
+    os.makedirs(folder, exist_ok=True)
+    compact = dict(separators=(",", ":"))
+    stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
+    path = os.path.join(folder, f"{stamp}-000Z_debug-{int(time.time() * 1000)}.jsonl")
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(json.dumps({"type": "session", "version": 3, "id": os.path.basename(path), "cwd": project,
+                               "timestamp": stamp}, **compact) + "\n")
+        file.write(json.dumps({"type": "message", "id": "m1", "parentId": None, "timestamp": stamp,
+                               "message": {"role": "user", "content": text}}, **compact) + "\n")
+    if not state().get("sandbox_pi"):
+        print("note: the running debug app was not started with --sandbox-pi; it will not see this")
+    print(path)
+
+
 COMMANDS = {"start": start, "stop": stop, "do": do, "status": status, "hittest": hittest,
-            "ncclick": ncclick, "dialog": dialog}
+            "ncclick": ncclick, "dialog": dialog, "session": session}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

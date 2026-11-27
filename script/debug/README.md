@@ -20,6 +20,10 @@ python -I script/debug/app.py dialog C:\some\folder   # answer the native "Selec
 python -I script/debug/app.py stop
 ```
 
+With `start --sandbox-pi` pi gets its own agent folder (`.scratch/headless/agent`), and
+`session FOLDER "text"` writes a session there exactly as a terminal pi would (compact JSON:
+the app's quick scan looks for `"role":"user"`, so hand-written JSON with spaces is not found).
+
 Look at screenshots with an image viewer or your agent's image reader; `do
 shot` with no path writes `.scratch/shots/<time>.png`.
 
